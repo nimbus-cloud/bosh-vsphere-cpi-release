@@ -44,6 +44,7 @@ module VSphereCloud
       snapshot = replicated_stemcell_properties['snapshot']
 
       config_hash = {memory_mb: @memory, num_cpus: @cpu}
+      config_hash.merge!(memory_allocation: VimSdk::Vim::ResourceAllocationInfo.new(reservation: @memory))
       config_hash.merge!(nested_hv_enabled: true) if @nested_hardware_virtualization
 
       config = VimSdk::Vim::Vm::ConfigSpec.new(config_hash)

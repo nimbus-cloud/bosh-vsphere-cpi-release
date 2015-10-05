@@ -192,7 +192,7 @@ describe VSphereCloud::VmCreator do
       allow(VimSdk::Vim::Vm::ConfigSpec).to receive(:new).and_call_original
       creator.create('agent_id', 'stemcell_cid', networks, persistent_disk_cids, {})
 
-      expect(VimSdk::Vim::Vm::ConfigSpec).to have_received(:new).with({memory_mb: 1024, num_cpus: 3})
+      expect(VimSdk::Vim::Vm::ConfigSpec).to have_received(:new).with({memory_mb: 1024, num_cpus: 3, memory_allocation: anything})
       expect(cpi).to have_received(:clone_vm) do |r_s_mob, vm_id, f_mob, rp_mob, config|
         expect(r_s_mob).to eq(replicated_stemcell_mob)
         expect(vm_id).to eq('vm-fake-uuid')
@@ -211,7 +211,7 @@ describe VSphereCloud::VmCreator do
       let(:nested_hardware_virtualization) { true }
       it 'clones the vm with the enabled' do
         expect(VimSdk::Vim::Vm::ConfigSpec).to receive(:new).with(
-            {memory_mb: 1024, num_cpus: 3, nested_hv_enabled: true}).and_call_original
+            {memory_mb: 1024, num_cpus: 3, nested_hv_enabled: true, memory_allocation: anything}).and_call_original
 
         creator.create('agent_id', 'stemcell_cid', networks, persistent_disk_cids, {})
       end
