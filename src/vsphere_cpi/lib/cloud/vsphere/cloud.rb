@@ -346,7 +346,49 @@ module VSphereCloud
 
         vm.reload
         virtual_disk = vm.disk_by_cid(disk.cid)
-        raise Bosh::Clouds::DiskNotAttached.new(true), "Disk '#{disk.cid}' is not attached to VM '#{vm.cid}'" if virtual_disk.nil?
+
+        disk_move_required = false
+        disk_move_ds_name = ''
+        disk_move_source_location = ''
+        disk_move_dest_location = ''
+        if virtual_disk.nil?
+          @logger.info('Our persistent disk has gone walkies. Most likely a storage vmotion. Lets attempt to correct')
+
+
+          devices = @cloud_searcher.get_property(vm.mob, Vim::VirtualMachine, 'config.hardware.device', ensure_all: true)
+
+          persistent_disks = devices.select { |device| device.kind_of?(Vim::Vm::Device::VirtualDisk) &&
+              device.backing.disk_mode == Vim::Vm::Device::VirtualDiskOption::DiskMode::INDEPENDENT_PERSISTENT }
+
+          raise Bosh::Clouds::DiskNotAttached.new(true), "Disk (#{disk_cid}) is not attached to VM (#{vm_cid}). Tried to correct but found more than one persistent disk." if persistent_disks.count>1
+          raise Bosh::Clouds::DiskNotAttached.new(true), "Disk (#{disk_cid}) is not attached to VM (#{vm_cid}). Tried to correct but could not find a persistent disk." if persistent_disks.count<1
+
+          virtual_disk = persistent_disks.shift
+
+          # datastore = virtual_disk.backing.datastore
+          new_file_name = virtual_disk.backing.file_name
+
+          @logger.info("Detected our new persistent disk on at #{new_file_name}")
+
+          # update database to be new peristent disk location
+          disk.path =~ /^\[\S+\]\s*(.+)\/[^\/]+$/
+          disk_move_dest_location = $1
+          raise Bosh::Clouds::DiskNotAttached.new(true), "Disk (#{disk_cid}) is not attached to VM (#{vm_cid}). Unable to get disk path from #{disk.path}" unless disk_move_dest_location
+
+          new_file_name =~ /^\[(\S+)\]\s*(.+)\/([^\/]+).vmdk$/
+          disk_move_ds_name = $1
+          disk_move_source_location = "#{$2}/#{$3}"
+          disk_move_dest_location = "#{disk_move_dest_location}/#{$3}"
+
+          raise Bosh::Clouds::DiskNotAttached.new(true), "Disk (#{disk_cid}) is not attached to VM (#{vm_cid}). Unable to get datastore from #{new_file_name}" unless disk_move_ds_name
+          raise Bosh::Clouds::DiskNotAttached.new(true), "Disk (#{disk_cid}) is not attached to VM (#{vm_cid}). Unable to get disk path from #{new_file_name}" unless disk_move_source_location
+          disk_move_required=true
+
+          disk_move_source_location = "[#{disk_move_ds_name}] #{disk_move_source_location}"
+          disk_move_dest_location = "[#{disk_move_ds_name}] #{disk_move_dest_location}"
+
+          @logger.info("Persistent Disk move of #{disk_move_source_location} to #{disk_move_dest_location} after detach required")
+        end
 
         config = Vim::Vm::ConfigSpec.new
         config.device_change = []
@@ -368,6 +410,16 @@ module VSphereCloud
         raise "Failed to detach disk '#{disk.cid}' from vm '#{vm.cid}'" unless virtual_disk.nil?
 
         @logger.info('Finished detaching disk')
+
+        if disk_move_required
+          # Disk has been detached. We now need to move it to a new location.
+          if disk_move_source_location != disk_move_dest_location
+            client.move_disk(@datacenter, disk_move_source_location, @datacenter, disk_move_dest_location)
+            @logger.info('Moved disk successfully now updating database again')
+          end
+          @logger.info('Storage v-motion fix successful')
+        end
+
       end
     end
 

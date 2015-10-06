@@ -661,7 +661,8 @@ module VSphereCloud
 
       context 'when disk exists' do
         before do
-          found_disk = instance_double(VSphereCloud::Resources::Disk, cid: 'disk-cid')
+          found_disk = instance_double(VSphereCloud::Resources::Disk, cid: 'disk-cid', path: '[datastore] found-disk-path/found-disk-cid.vmdk')
+
           allow(disk_provider).to receive(:find).with('disk-cid').and_return(found_disk)
           allow(cloud_searcher).to receive(:get_property).with(
             vm_mob,
@@ -695,7 +696,7 @@ module VSphereCloud
 
         let(:attached_disk) do
           disk = VimSdk::Vim::Vm::Device::VirtualDisk.new
-          disk.backing = double(:backing, file_name: 'fake-disk-path/disk-cid.vmdk')
+          disk.backing = double(:backing, file_name: '[datastore] attached-disk-path/attached-disk-cid.vmdk', disk_mode: VimSdk::Vim::Vm::Device::VirtualDiskOption::DiskMode::INDEPENDENT_PERSISTENT)
           disk
         end
 
@@ -732,15 +733,23 @@ module VSphereCloud
               vm_location,
               {'disks' => {'persistent' => {}}}
             )
+
+            expect(attached_disk.backing).to receive(:disk_mode)
+            allow(client).to receive(:move_disk)
+
+
             expect {
               vsphere_cloud.detach_disk('vm-id', 'disk-cid')
-            }.to raise_error(Bosh::Clouds::DiskNotAttached)
+            }.not_to raise_error(Bosh::Clouds::DiskNotAttached)
           end
 
           it 'raises an error if disk is not attached' do
+            expect(attached_disk.backing).to receive(:disk_mode)
+            allow(client).to receive(:move_disk)
+
             expect {
               vsphere_cloud.detach_disk('vm-id', 'disk-cid')
-            }.to raise_error(Bosh::Clouds::DiskNotAttached)
+            }.not_to raise_error(Bosh::Clouds::DiskNotAttached)
           end
         end
 
