@@ -208,13 +208,17 @@ module VSphereCloud
       disk_size_in_mb.nil? ? nil : Resources::Disk.new(disk_cid, disk_size_in_mb, datastore, disk_path)
     end
 
-    def create_disk(datacenter, datastore, disk_cid, disk_folder, disk_size_in_mb)
+    def create_disk(datacenter, datastore, disk_cid, disk_folder, disk_size_in_mb, disk_type)
+      if disk_type.nil?
+        raise 'no disk type specified'
+      end
+
       disk_path = "[#{datastore.name}] #{disk_folder}/#{disk_cid}.vmdk"
 
       create_parent_folder(datacenter, disk_path)
 
       disk_spec = VimSdk::Vim::VirtualDiskManager::FileBackedVirtualDiskSpec.new
-      disk_spec.disk_type = 'preallocated'
+      disk_spec.disk_type = disk_type
       disk_spec.capacity_kb = disk_size_in_mb * 1024
       disk_spec.adapter_type = 'lsiLogic'
 
