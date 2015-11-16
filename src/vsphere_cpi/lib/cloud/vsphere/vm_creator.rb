@@ -18,6 +18,11 @@ module VSphereCloud
     end
 
     def create(agent_id, stemcell_cid, networks, persistent_disk_cids, environment)
+      ip_conflicts = IPConflictDetector.new(@logger, @client, networks).conflicts
+      unless ip_conflicts.empty?
+        raise "Cannot create new VM because of IP conflicts with other VMs on the same networks: #{ip_conflicts}"
+      end
+
       stemcell_vm = @cpi.stemcell_vm(stemcell_cid)
       raise "Could not find VM for stemcell '#{stemcell_cid}'" if stemcell_vm.nil?
 

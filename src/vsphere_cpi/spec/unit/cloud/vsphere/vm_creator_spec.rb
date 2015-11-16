@@ -2,20 +2,20 @@ require 'spec_helper'
 require 'cloud/vsphere/drs_rules/drs_rule'
 
 describe VSphereCloud::VmCreator do
+  subject(:creator) do
+    described_class.new(1024, 1024, 3, nested_hardware_virtualization, placer, vsphere_client, cloud_searcher, logger, cpi, agent_env, file_provider, disk_provider)
+  end
+  let(:nested_hardware_virtualization) { false }
+  let(:placer) { instance_double('VSphereCloud::FixedClusterPlacer', drs_rules: []) }
+  let(:vsphere_client) { instance_double('VSphereCloud::Client', cloud_searcher: cloud_searcher) }
+  let(:logger) { double('logger', debug: nil, info: nil) }
+  let(:cpi) { instance_double('VSphereCloud::Cloud') }
+  let(:agent_env) { instance_double('VSphereCloud::AgentEnv') }
+  let(:file_provider) { instance_double('VSphereCloud::FileProvider') }
+  let(:cloud_searcher) { instance_double('VSphereCloud::CloudSearcher') }
+  let(:disk_provider) { instance_double(VSphereCloud::DiskProvider) }
+
   describe '#create' do
-    subject(:creator) do
-      described_class.new(1024, 1024, 3, nested_hardware_virtualization, placer, vsphere_client, cloud_searcher, logger, cpi, agent_env, file_provider, disk_provider)
-    end
-
-    let(:nested_hardware_virtualization) { false }
-    let(:placer) { instance_double('VSphereCloud::FixedClusterPlacer', drs_rules: []) }
-    let(:vsphere_client) { instance_double('VSphereCloud::Client', cloud_searcher: cloud_searcher) }
-    let(:logger) { double('logger', debug: nil, info: nil) }
-    let(:cpi) { instance_double('VSphereCloud::Cloud') }
-    let(:agent_env) { instance_double('VSphereCloud::AgentEnv') }
-    let(:file_provider) { instance_double('VSphereCloud::FileProvider') }
-    let(:cloud_searcher) { instance_double('VSphereCloud::CloudSearcher') }
-
     let(:networks) do
       {
         'network_name' => {
@@ -26,7 +26,7 @@ describe VSphereCloud::VmCreator do
       }
     end
 
-    let(:disk_provider) { instance_double(VSphereCloud::DiskProvider) }
+
     let(:persistent_disk_cids) { ['disk1_cid'] }
     let(:persistent_disks) { [VSphereCloud::Resources::Disk.new('disk1_cid', 1024, 'disk1_datastore', 'disk1_path')] }
     let(:disk_spec) { double('disk spec') }
@@ -140,7 +140,7 @@ describe VSphereCloud::VmCreator do
 
       it 'raises an error' do
         expect {
-          creator.create(nil, 'sc-beef', nil, [], {})
+          creator.create(nil, 'sc-beef', [], [], {})
         }.to raise_error("Could not find VM for stemcell 'sc-beef'")
       end
     end

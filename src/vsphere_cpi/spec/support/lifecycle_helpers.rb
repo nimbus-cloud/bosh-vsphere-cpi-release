@@ -246,6 +246,16 @@ are configured to allow multiple hosts to access them:
       end
     end
 
+    def any_vsan?(cpi, pattern)
+      datastores = matching_datastores(cpi, pattern)
+      datastores.any? { |datastore_name, _| is_vsan?(cpi, datastore_name)}
+    end
+
+    def is_vsan?(cpi, datastore_name)
+      datastore_mob = cpi.client.cloud_searcher.get_managed_object(VimSdk::Vim::Datastore, name: datastore_name)
+      datastore_mob.summary.type == "vsan"
+    end
+
     private
 
     def matching_datastores(cpi, pattern)
