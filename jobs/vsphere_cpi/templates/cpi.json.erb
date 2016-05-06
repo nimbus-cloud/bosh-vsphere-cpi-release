@@ -74,6 +74,8 @@
       update_blobstore_options(options, 's3_force_path_style')
       update_blobstore_options(options, 'ssl_verify_peer')
       update_blobstore_options(options, 's3_multipart_threshold')
+      update_blobstore_options(options, 's3_signature_version', 'signature_version')
+      update_blobstore_options(options, 's3_region', 'region')
 
     elsif p('blobstore.provider') == 'local'
       options = {

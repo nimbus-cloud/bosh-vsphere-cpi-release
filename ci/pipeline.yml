@@ -2,26 +2,11 @@
 groups:
   - name: bosh-vsphere-cpi-release
     jobs:
-      - create-jumpbox
-      - test-stemcell-download
+      - cache-stemcells
       - build-candidate
-      - bats-ubuntu-manual
-      - bats-centos-manual
       - lifecycle-5.1
       - lifecycle-6.0
       - lifecycle-6.0-vsan
-      - promote-candidate
-
-  - name: ubuntu
-    jobs:
-      - build-candidate
-      - bats-ubuntu-manual
-      - promote-candidate
-
-  - name: centos
-    jobs:
-      - build-candidate
-      - bats-centos-manual
       - promote-candidate
 
   - name: vsphere-5.1
@@ -38,20 +23,11 @@ groups:
       - promote-candidate
 
 jobs:
-  - name: create-jumpbox
+  - name: cache-stemcells
     plan:
       - aggregate:
-        - {trigger: false, get: bosh-cpi-release, tags: ["vsphere-v5.1"]}
-
-      - task: sleep
-        tags: ["vsphere-v5.1"]
-        file: bosh-cpi-release/ci/tasks/create-jumpbox.yml
-
-  - name: test-stemcell-download
-    plan:
-      - aggregate:
-        - {trigger: true,  get: one-hour-timer, tags: ["vsphere-v5.1"]}
-        - {trigger: false, get: stemcell, resource: vsphere-ubuntu-stemcell, tags: ["vsphere-v5.1"]}
+        - {trigger: true, get: vsphere-centos-stemcell, tags: ["vsphere-v5.1"]}
+        - {trigger: true, get: vsphere-ubuntu-stemcell, tags: ["vsphere-v5.1"]}
 
       - task: setup-container
         tags: ["vsphere-v5.1"]
@@ -59,7 +35,8 @@ jobs:
           platform: linux
           image: docker:///boshcpi/vsphere-cpi-release
           inputs:
-            - name: stemcell
+            - name: vsphere-centos-stemcell
+            - name: vsphere-ubuntu-stemcell
           run:
             path: echo
             args: ["Finished setting up container."]
@@ -68,7 +45,7 @@ jobs:
     serial: true
     plan:
       - aggregate:
-        - {trigger: true, get: bosh-cpi-release, tags: ["vsphere-v5.1"]}
+        - {trigger: true, get: bosh-cpi-src, tags: ["vsphere-v5.1"]}
         - {trigger: false, get: version-semver, params: {bump: patch}, tags: ["vsphere-v5.1"]}
 
       - put: version-semver
@@ -77,248 +54,124 @@ jobs:
 
       - task: build
         tags: ["vsphere-v5.1"]
-        file: bosh-cpi-release/ci/tasks/build-candidate.yml
+        file: bosh-cpi-src/ci/tasks/build-candidate.yml
 
-      - put: bosh-cpi-dev-artifacts
+      - put: bosh-cpi-artifacts
         tags: ["vsphere-v5.1"]
-        params: {from: build/out/.*\.tgz}
+        params: {from: dev-artifacts/.*\.tgz}
 
   - name: lifecycle-5.1
     plan:
       - aggregate:
-        - {trigger: true,  passed: [build-candidate], get: bosh-cpi-dev-artifacts, tags: ["vsphere-v5.1"]} # used for job chaining only not for tasks
-        - {trigger: false, passed: [build-candidate], get: bosh-cpi-release, tags: ["vsphere-v5.1"]}
+        - {trigger: true,  passed: [build-candidate], get: bosh-cpi-artifacts, tags: ["vsphere-v5.1"]} # used for job chaining only not for tasks
+        - {trigger: false, passed: [build-candidate], get: bosh-cpi-src, tags: ["vsphere-v5.1"]}
         - {trigger: false,                            get: stemcell, resource: vsphere-ubuntu-stemcell, tags: ["vsphere-v5.1"]}
 
       - task: test
         tags: ["vsphere-v5.1"]
-        file: bosh-cpi-release/ci/tasks/run-lifecycle.yml
-        config:
-          params:
-            BOSH_VSPHERE_VERSION:                                 {{lifecycle_vsphere_5_1_version}}
-            BOSH_VSPHERE_CPI_HOST:                                {{lifecycle_vsphere_5_1_host}}
-            BOSH_VSPHERE_CPI_USER:                                {{lifecycle_vsphere_5_1_user}}
-            BOSH_VSPHERE_CPI_PASSWORD:                            {{lifecycle_vsphere_5_1_password}}
-            BOSH_VSPHERE_VLAN:                                    {{lifecycle_vsphere_5_1_vlan}}
-            BOSH_VSPHERE_CPI_DATACENTER:                          {{lifecycle_vsphere_5_1_datacenter}}
-            BOSH_VSPHERE_CPI_CLUSTER:                             {{lifecycle_vsphere_5_1_first_cluster}}
-            BOSH_VSPHERE_CPI_DATASTORE_PATTERN:                   {{lifecycle_vsphere_5_1_datastore_pattern_available_to_all_hosts_in_first_cluster}}
-            BOSH_VSPHERE_CPI_PERSISTENT_DATASTORE_PATTERN:        {{lifecycle_vsphere_5_1_persistent_datastore_pattern_available_to_all_clusters}}
-            BOSH_VSPHERE_CPI_SECOND_DATASTORE:                    {{lifecycle_vsphere_5_1_second_datastore_available_to_all_hosts_in_first_cluster}}
-            BOSH_VSPHERE_CPI_LOCAL_DATASTORE_PATTERN:             {{lifecycle_vsphere_5_1_local_datastore_pattern_available_to_a_single_host_in_first_cluster}}
-            BOSH_VSPHERE_CPI_RESOURCE_POOL:                       {{lifecycle_vsphere_5_1_first_cluster_first_resource_pool}}
-            BOSH_VSPHERE_CPI_SECOND_RESOURCE_POOL:                {{lifecycle_vsphere_5_1_first_cluster_second_resource_pool}}
-            BOSH_VSPHERE_CPI_SECOND_CLUSTER:                      {{lifecycle_vsphere_5_1_second_cluster}}
-            BOSH_VSPHERE_CPI_SECOND_CLUSTER_DATASTORE:            {{lifecycle_vsphere_5_1_datastore_pattern_available_to_all_hosts_in_second_cluster}}
-            BOSH_VSPHERE_CPI_SECOND_CLUSTER_RESOURCE_POOL:        {{lifecycle_vsphere_5_1_second_cluster_first_resource_pool}}
-            BOSH_VSPHERE_CPI_VM_FOLDER:                           {{lifecycle_vsphere_5_1_vm_folder}}
-            BOSH_VSPHERE_CPI_TEMPLATE_FOLDER:                     {{lifecycle_vsphere_5_1_template_folder}}
-            BOSH_VSPHERE_CPI_DISK_PATH:                           {{lifecycle_vsphere_5_1_disk_path}}
-            BOSH_VSPHERE_CPI_NESTED_DATACENTER:                   {{lifecycle_vsphere_5_1_nested_datacenter}}
-            BOSH_VSPHERE_CPI_NESTED_DATACENTER_DATASTORE_PATTERN: {{lifecycle_vsphere_5_1_nested_datacenter_datastore_pattern}}
-            BOSH_VSPHERE_CPI_NESTED_DATACENTER_CLUSTER:           {{lifecycle_vsphere_5_1_nested_datacenter_cluster}}
-            BOSH_VSPHERE_CPI_NESTED_DATACENTER_RESOURCE_POOL:     {{lifecycle_vsphere_5_1_nested_datacenter_resource_pool}}
-            BOSH_VSPHERE_CPI_NESTED_DATACENTER_VLAN:              {{lifecycle_vsphere_5_1_nested_datacenter_vlan}}
+        file: bosh-cpi-src/ci/tasks/run-lifecycle.yml
+        params:
+          BOSH_VSPHERE_VERSION:                                 {{lifecycle_vsphere_5_1_version}}
+          BOSH_VSPHERE_CPI_HOST:                                {{lifecycle_vsphere_5_1_host}}
+          BOSH_VSPHERE_CPI_USER:                                {{lifecycle_vsphere_5_1_user}}
+          BOSH_VSPHERE_CPI_PASSWORD:                            {{lifecycle_vsphere_5_1_password}}
+          BOSH_VSPHERE_VLAN:                                    {{lifecycle_vsphere_5_1_vlan}}
+          BOSH_VSPHERE_CPI_DATACENTER:                          {{lifecycle_vsphere_5_1_datacenter}}
+          BOSH_VSPHERE_CPI_CLUSTER:                             {{lifecycle_vsphere_5_1_first_cluster}}
+          BOSH_VSPHERE_CPI_DATASTORE_PATTERN:                   {{lifecycle_vsphere_5_1_datastore_pattern_available_to_all_hosts_in_first_cluster}}
+          BOSH_VSPHERE_CPI_PERSISTENT_DATASTORE_PATTERN:        {{lifecycle_vsphere_5_1_persistent_datastore_pattern_available_to_all_clusters}}
+          BOSH_VSPHERE_CPI_SECOND_DATASTORE:                    {{lifecycle_vsphere_5_1_second_datastore_available_to_all_hosts_in_first_cluster}}
+          BOSH_VSPHERE_CPI_LOCAL_DATASTORE_PATTERN:             {{lifecycle_vsphere_5_1_local_datastore_pattern_available_to_a_single_host_in_first_cluster}}
+          BOSH_VSPHERE_CPI_RESOURCE_POOL:                       {{lifecycle_vsphere_5_1_first_cluster_first_resource_pool}}
+          BOSH_VSPHERE_CPI_SECOND_RESOURCE_POOL:                {{lifecycle_vsphere_5_1_first_cluster_second_resource_pool}}
+          BOSH_VSPHERE_CPI_SECOND_CLUSTER:                      {{lifecycle_vsphere_5_1_second_cluster}}
+          BOSH_VSPHERE_CPI_SECOND_CLUSTER_DATASTORE:            {{lifecycle_vsphere_5_1_datastore_pattern_available_to_all_hosts_in_second_cluster}}
+          BOSH_VSPHERE_CPI_SECOND_CLUSTER_RESOURCE_POOL:        {{lifecycle_vsphere_5_1_second_cluster_first_resource_pool}}
+          BOSH_VSPHERE_CPI_VM_FOLDER:                           {{lifecycle_vsphere_5_1_vm_folder}}
+          BOSH_VSPHERE_CPI_TEMPLATE_FOLDER:                     {{lifecycle_vsphere_5_1_template_folder}}
+          BOSH_VSPHERE_CPI_DISK_PATH:                           {{lifecycle_vsphere_5_1_disk_path}}
+          BOSH_VSPHERE_CPI_NESTED_DATACENTER:                   {{lifecycle_vsphere_5_1_nested_datacenter}}
+          BOSH_VSPHERE_CPI_NESTED_DATACENTER_DATASTORE_PATTERN: {{lifecycle_vsphere_5_1_nested_datacenter_datastore_pattern}}
+          BOSH_VSPHERE_CPI_NESTED_DATACENTER_CLUSTER:           {{lifecycle_vsphere_5_1_nested_datacenter_cluster}}
+          BOSH_VSPHERE_CPI_NESTED_DATACENTER_RESOURCE_POOL:     {{lifecycle_vsphere_5_1_nested_datacenter_resource_pool}}
+          BOSH_VSPHERE_CPI_NESTED_DATACENTER_VLAN:              {{lifecycle_vsphere_5_1_nested_datacenter_vlan}}
 
   - name: lifecycle-6.0
     plan:
       - aggregate:
-        - {trigger: true,  passed: [build-candidate], get: bosh-cpi-dev-artifacts, tags: ["vsphere-v5.1"]} # used for job chaining only not for tasks
-        - {trigger: false, passed: [build-candidate], get: bosh-cpi-release, tags: ["vsphere-v5.1"]}
+        - {trigger: true,  passed: [build-candidate], get: bosh-cpi-artifacts, tags: ["vsphere-v5.1"]} # used for job chaining only not for tasks
+        - {trigger: false, passed: [build-candidate], get: bosh-cpi-src, tags: ["vsphere-v5.1"]}
         - {trigger: false,                            get: stemcell, resource: vsphere-ubuntu-stemcell, tags: ["vsphere-v5.1"]}
 
       - task: test
         tags: ["vsphere-v5.1"]
-        file: bosh-cpi-release/ci/tasks/run-lifecycle.yml
-        config: &lifecycle-6-params
-          params:
-            BOSH_VSPHERE_VERSION:                                 {{lifecycle_vsphere_6_0_version}}
-            BOSH_VSPHERE_CPI_HOST:                                {{lifecycle_vsphere_6_0_host}}
-            BOSH_VSPHERE_CPI_USER:                                {{lifecycle_vsphere_6_0_user}}
-            BOSH_VSPHERE_CPI_PASSWORD:                            {{lifecycle_vsphere_6_0_password}}
-            BOSH_VSPHERE_VLAN:                                    {{lifecycle_vsphere_6_0_vlan}}
-            BOSH_VSPHERE_CPI_DATACENTER:                          {{lifecycle_vsphere_6_0_datacenter}}
-            BOSH_VSPHERE_CPI_CLUSTER:                             {{lifecycle_vsphere_6_0_first_cluster}}
-            BOSH_VSPHERE_CPI_DATASTORE_PATTERN:                   {{lifecycle_vsphere_6_0_datastore_pattern_available_to_all_hosts_in_first_cluster}}
-            BOSH_VSPHERE_CPI_PERSISTENT_DATASTORE_PATTERN:        {{lifecycle_vsphere_6_0_persistent_datastore_pattern_available_to_all_clusters}}
-            BOSH_VSPHERE_CPI_SECOND_DATASTORE:                    {{lifecycle_vsphere_6_0_second_datastore_available_to_all_hosts_in_first_cluster}}
-            BOSH_VSPHERE_CPI_LOCAL_DATASTORE_PATTERN:             {{lifecycle_vsphere_6_0_local_datastore_pattern_available_to_a_single_host_in_first_cluster}}
-            BOSH_VSPHERE_CPI_RESOURCE_POOL:                       {{lifecycle_vsphere_6_0_first_cluster_first_resource_pool}}
-            BOSH_VSPHERE_CPI_SECOND_RESOURCE_POOL:                {{lifecycle_vsphere_6_0_first_cluster_second_resource_pool}}
-            BOSH_VSPHERE_CPI_SECOND_CLUSTER:                      {{lifecycle_vsphere_6_0_second_cluster}}
-            BOSH_VSPHERE_CPI_SECOND_CLUSTER_DATASTORE:            {{lifecycle_vsphere_6_0_datastore_pattern_available_to_all_hosts_in_second_cluster}}
-            BOSH_VSPHERE_CPI_SECOND_CLUSTER_RESOURCE_POOL:        {{lifecycle_vsphere_6_0_second_cluster_first_resource_pool}}
-            BOSH_VSPHERE_CPI_VM_FOLDER:                           {{lifecycle_vsphere_6_0_vm_folder}}
-            BOSH_VSPHERE_CPI_TEMPLATE_FOLDER:                     {{lifecycle_vsphere_6_0_template_folder}}
-            BOSH_VSPHERE_CPI_DISK_PATH:                           {{lifecycle_vsphere_6_0_disk_path}}
-            BOSH_VSPHERE_CPI_NESTED_DATACENTER:                   {{lifecycle_vsphere_6_0_nested_datacenter}}
-            BOSH_VSPHERE_CPI_NESTED_DATACENTER_DATASTORE_PATTERN: {{lifecycle_vsphere_6_0_nested_datacenter_datastore_pattern}}
-            BOSH_VSPHERE_CPI_NESTED_DATACENTER_CLUSTER:           {{lifecycle_vsphere_6_0_nested_datacenter_cluster}}
-            BOSH_VSPHERE_CPI_NESTED_DATACENTER_RESOURCE_POOL:     {{lifecycle_vsphere_6_0_nested_datacenter_resource_pool}}
-            BOSH_VSPHERE_CPI_NESTED_DATACENTER_VLAN:              {{lifecycle_vsphere_6_0_nested_datacenter_vlan}}
+        file: bosh-cpi-src/ci/tasks/run-lifecycle.yml
+        params: &lifecycle-6-params
+          BOSH_VSPHERE_VERSION:                                 {{lifecycle_vsphere_6_0_version}}
+          BOSH_VSPHERE_CPI_HOST:                                {{lifecycle_vsphere_6_0_host}}
+          BOSH_VSPHERE_CPI_USER:                                {{lifecycle_vsphere_6_0_user}}
+          BOSH_VSPHERE_CPI_PASSWORD:                            {{lifecycle_vsphere_6_0_password}}
+          BOSH_VSPHERE_VLAN:                                    {{lifecycle_vsphere_6_0_vlan}}
+          BOSH_VSPHERE_CPI_DATACENTER:                          {{lifecycle_vsphere_6_0_datacenter}}
+          BOSH_VSPHERE_CPI_CLUSTER:                             {{lifecycle_vsphere_6_0_first_cluster}}
+          BOSH_VSPHERE_CPI_DATASTORE_PATTERN:                   {{lifecycle_vsphere_6_0_datastore_pattern_available_to_all_hosts_in_first_cluster}}
+          BOSH_VSPHERE_CPI_PERSISTENT_DATASTORE_PATTERN:        {{lifecycle_vsphere_6_0_persistent_datastore_pattern_available_to_all_clusters}}
+          BOSH_VSPHERE_CPI_SECOND_DATASTORE:                    {{lifecycle_vsphere_6_0_second_datastore_available_to_all_hosts_in_first_cluster}}
+          BOSH_VSPHERE_CPI_LOCAL_DATASTORE_PATTERN:             {{lifecycle_vsphere_6_0_local_datastore_pattern_available_to_a_single_host_in_first_cluster}}
+          BOSH_VSPHERE_CPI_RESOURCE_POOL:                       {{lifecycle_vsphere_6_0_first_cluster_first_resource_pool}}
+          BOSH_VSPHERE_CPI_SECOND_RESOURCE_POOL:                {{lifecycle_vsphere_6_0_first_cluster_second_resource_pool}}
+          BOSH_VSPHERE_CPI_SECOND_CLUSTER:                      {{lifecycle_vsphere_6_0_second_cluster}}
+          BOSH_VSPHERE_CPI_SECOND_CLUSTER_DATASTORE:            {{lifecycle_vsphere_6_0_datastore_pattern_available_to_all_hosts_in_second_cluster}}
+          BOSH_VSPHERE_CPI_SECOND_CLUSTER_RESOURCE_POOL:        {{lifecycle_vsphere_6_0_second_cluster_first_resource_pool}}
+          BOSH_VSPHERE_CPI_VM_FOLDER:                           {{lifecycle_vsphere_6_0_vm_folder}}
+          BOSH_VSPHERE_CPI_TEMPLATE_FOLDER:                     {{lifecycle_vsphere_6_0_template_folder}}
+          BOSH_VSPHERE_CPI_DISK_PATH:                           {{lifecycle_vsphere_6_0_disk_path}}
+          BOSH_VSPHERE_CPI_NESTED_DATACENTER:                   {{lifecycle_vsphere_6_0_nested_datacenter}}
+          BOSH_VSPHERE_CPI_NESTED_DATACENTER_DATASTORE_PATTERN: {{lifecycle_vsphere_6_0_nested_datacenter_datastore_pattern}}
+          BOSH_VSPHERE_CPI_NESTED_DATACENTER_CLUSTER:           {{lifecycle_vsphere_6_0_nested_datacenter_cluster}}
+          BOSH_VSPHERE_CPI_NESTED_DATACENTER_RESOURCE_POOL:     {{lifecycle_vsphere_6_0_nested_datacenter_resource_pool}}
+          BOSH_VSPHERE_CPI_NESTED_DATACENTER_VLAN:              {{lifecycle_vsphere_6_0_nested_datacenter_vlan}}
 
   - name: lifecycle-6.0-vsan
     plan:
       - aggregate:
-        - {trigger: true,  passed: [build-candidate], get: bosh-cpi-dev-artifacts, tags: ["vsphere-v5.1"]} # used for job chaining only not for tasks
-        - {trigger: false, passed: [build-candidate], get: bosh-cpi-release, tags: ["vsphere-v5.1"]}
+        - {trigger: true,  passed: [build-candidate], get: bosh-cpi-artifacts, tags: ["vsphere-v5.1"]} # used for job chaining only not for tasks
+        - {trigger: false, passed: [build-candidate], get: bosh-cpi-src, tags: ["vsphere-v5.1"]}
         - {trigger: false,                            get: stemcell, resource: vsphere-ubuntu-stemcell, tags: ["vsphere-v5.1"]}
 
       - task: test
         tags: ["vsphere-v5.1"]
-        file: bosh-cpi-release/ci/tasks/run-lifecycle.yml
-        config:
+        file: bosh-cpi-src/ci/tasks/run-lifecycle.yml
+        params:
           <<: *lifecycle-6-params
-          params:
-            BOSH_VSPHERE_CPI_DATASTORE_PATTERN:                   {{lifecycle_vsphere_6_0_vsan_datastore_pattern_available_to_all_hosts_in_first_cluster}}
-            BOSH_VSPHERE_CPI_SECOND_CLUSTER_DATASTORE:            {{lifecycle_vsphere_6_0_vsan_datastore_pattern_available_to_all_hosts_in_second_cluster}}
-
-  - name: bats-ubuntu-manual
-    plan:
-      - aggregate:
-        - {trigger: true,  passed: [build-candidate], get: bosh-cpi-dev-artifacts, tags: ["vsphere-v5.1"]}
-        - {trigger: false, passed: [build-candidate], get: version-semver, tags: ["vsphere-v5.1"]}
-        - {trigger: false, passed: [build-candidate], get: bosh-cpi-release, tags: ["vsphere-v5.1"]}
-        - {trigger: false,                            get: bosh-init, tags: ["vsphere-v5.1"]}
-        - {trigger: false,                            get: bosh-release, tags: ["vsphere-v5.1"]}
-        - {trigger: false,                            get: stemcell, resource: vsphere-ubuntu-stemcell, tags: ["vsphere-v5.1"]}
-        - {trigger: false,                            get: bats, tags: ["vsphere-v5.1"]}
-
-      - put: vsphere-5.1-environment
-        tags: ["vsphere-v5.1"]
-        params:
-          acquire: true
-
-      - task: show_env
-        tags: ["vsphere-v5.1"]
-        file: bosh-cpi-release/ci/tasks/show_env.yml
-
-      - task: setup-director
-        tags: ["vsphere-v5.1"]
-        file: bosh-cpi-release/ci/tasks/setup-director.yml
-        config:
-          params:
-            base_os:                                ubuntu
-            network_type_to_test:                   manual
-            BOSH_VSPHERE_VCENTER:                   {{VCENTER_IP}}
-            BOSH_VSPHERE_VCENTER_USER:              {{VCENTER_USER}}
-            BOSH_VSPHERE_VCENTER_PASSWORD:          {{VCENTER_PASSWORD}}
-            BOSH_VSPHERE_VERSION:                   {{VSPHERE_VERSION}}
-            BOSH_VSPHERE_VCENTER_DC:                {{VCENTER_DC}}
-            BOSH_VSPHERE_VCENTER_CLUSTER:           {{VCENTER_CLUSTER}}
-            BOSH_VSPHERE_VCENTER_VM_FOLDER:         {{ubuntu_VCENTER_VM_FOLDER}}
-            BOSH_VSPHERE_VCENTER_TEMPLATE_FOLDER:   {{ubuntu_VCENTER_TEMPLATE_FOLDER}}
-            BOSH_VSPHERE_VCENTER_DATASTORE_PATTERN: {{VCENTER_DATASTORE_PATTERN}}
-            BOSH_VSPHERE_VCENTER_DISK_PATH:         {{ubuntu_VCENTER_DISK_PATH}}
-            BOSH_VSPHERE_VCENTER_VLAN:              {{VCENTER_VLAN}}
-
-      - task: test
-        tags: ["vsphere-v5.1"]
-        file: bosh-cpi-release/ci/tasks/run-bats.yml
-        config:
-          params:
-            base_os:                                      ubuntu
-            network_type_to_test:                         manual
-            BAT_STEMCELL_NAME:                            {{ubuntu_BAT_STEMCELL_NAME}}
-            BAT_VLAN:                                     {{VCENTER_VLAN}}
-            BAT_VCAP_PASSWORD:                            {{BAT_VCAP_PASSWORD}}
-            BAT_SECOND_NETWORK_VLAN:                      {{ubuntu_BAT_SECOND_NETWORK_VLAN}}
-
-      - task: teardown-director
-        tags: ["vsphere-v5.1"]
-        file: bosh-cpi-release/ci/tasks/teardown-director.yml
-
-      - put: vsphere-5.1-environment
-        tags: ["vsphere-v5.1"]
-        params:
-          release: vsphere-5.1-environment
-
-  - name: bats-centos-manual
-    plan:
-      - aggregate:
-        - {trigger: true,  passed: [build-candidate], get: bosh-cpi-dev-artifacts, tags: ["vsphere-v5.1"]}
-        - {trigger: false, passed: [build-candidate], get: version-semver, tags: ["vsphere-v5.1"]}
-        - {trigger: false, passed: [build-candidate], get: bosh-cpi-release, tags: ["vsphere-v5.1"]}
-        - {trigger: false,                            get: bosh-init, tags: ["vsphere-v5.1"]}
-        - {trigger: false,                            get: bosh-release, tags: ["vsphere-v5.1"]}
-        - {trigger: false,                            get: stemcell, resource: vsphere-centos-stemcell, tags: ["vsphere-v5.1"]}
-        - {trigger: false,                            get: bats, tags: ["vsphere-v5.1"]}
-
-      - put: vsphere-5.1-environment
-        tags: ["vsphere-v5.1"]
-        params:
-          acquire: true
-
-      - task: show_env
-        tags: ["vsphere-v5.1"]
-        file: bosh-cpi-release/ci/tasks/show_env.yml
-
-      - task: setup-director
-        tags: ["vsphere-v5.1"]
-        file: bosh-cpi-release/ci/tasks/setup-director.yml
-        config:
-          params:
-            base_os:                                centos
-            network_type_to_test:                   manual
-            BOSH_VSPHERE_VCENTER:                   {{VCENTER_IP}}
-            BOSH_VSPHERE_VCENTER_USER:              {{VCENTER_USER}}
-            BOSH_VSPHERE_VCENTER_PASSWORD:          {{VCENTER_PASSWORD}}
-            BOSH_VSPHERE_VERSION:                   {{VSPHERE_VERSION}}
-            BOSH_VSPHERE_VCENTER_DC:                {{VCENTER_DC}}
-            BOSH_VSPHERE_VCENTER_CLUSTER:           {{VCENTER_CLUSTER}}
-            BOSH_VSPHERE_VCENTER_VM_FOLDER:         {{centos_VCENTER_VM_FOLDER}}
-            BOSH_VSPHERE_VCENTER_TEMPLATE_FOLDER:   {{centos_VCENTER_TEMPLATE_FOLDER}}
-            BOSH_VSPHERE_VCENTER_DATASTORE_PATTERN: {{VCENTER_DATASTORE_PATTERN}}
-            BOSH_VSPHERE_VCENTER_DISK_PATH:         {{centos_VCENTER_DISK_PATH}}
-            BOSH_VSPHERE_VCENTER_VLAN:              {{VCENTER_VLAN}}
-
-      - task: test
-        tags: ["vsphere-v5.1"]
-        file: bosh-cpi-release/ci/tasks/run-bats.yml
-        config:
-          params:
-            base_os:                                      centos
-            network_type_to_test:                         manual
-            BAT_STEMCELL_NAME:                            {{centos_BAT_STEMCELL_NAME}}
-            BAT_VLAN:                                     {{VCENTER_VLAN}}
-            BAT_VCAP_PASSWORD:                            {{BAT_VCAP_PASSWORD}}
-            BAT_SECOND_NETWORK_VLAN:                      {{centos_BAT_SECOND_NETWORK_VLAN}}
-
-      - task: teardown-director
-        tags: ["vsphere-v5.1"]
-        file: bosh-cpi-release/ci/tasks/teardown-director.yml
-
-      - put: vsphere-5.1-environment
-        tags: ["vsphere-v5.1"]
-        params:
-          release: vsphere-5.1-environment
+          BOSH_VSPHERE_CPI_DATASTORE_PATTERN:                   {{lifecycle_vsphere_6_0_vsan_datastore_pattern_available_to_all_hosts_in_first_cluster}}
+          BOSH_VSPHERE_CPI_SECOND_CLUSTER_DATASTORE:            {{lifecycle_vsphere_6_0_vsan_datastore_pattern_available_to_all_hosts_in_second_cluster}}
 
   - name: promote-candidate
     serial: true
     plan:
     - aggregate:
-      - {trigger: false, passed: [lifecycle-5.1, lifecycle-6.0, lifecycle-6.0-vsan, bats-ubuntu-manual, bats-centos-manual], get: bosh-cpi-dev-artifacts, tags: ["vsphere-v5.1"]}
-      - {trigger: false, passed: [lifecycle-5.1, lifecycle-6.0, lifecycle-6.0-vsan, bats-ubuntu-manual, bats-centos-manual], get: bosh-cpi-release, tags: ["vsphere-v5.1"]}
+      - {trigger: false, passed: [lifecycle-5.1, lifecycle-6.0, lifecycle-6.0-vsan], get: bosh-cpi-artifacts, tags: ["vsphere-v5.1"]}
+      - {trigger: false, passed: [lifecycle-5.1, lifecycle-6.0, lifecycle-6.0-vsan], get: bosh-cpi-src, tags: ["vsphere-v5.1"]}
       - {trigger: false, get: release-version-semver, params: {bump: major}, tags: ["vsphere-v5.1"]}
 
     - task: promote
       tags: ["vsphere-v5.1"]
-      file: bosh-cpi-release/ci/tasks/promote-candidate.yml
-      config:
-        params:
-          aws_access_key_id:     {{s3_vsphere_cpi_blobwriter_access_key}}
-          aws_secret_access_key: {{s3_vsphere_cpi_blobwriter_secret_key}}
+      file: bosh-cpi-src/ci/tasks/promote-candidate.yml
+      params:
+        aws_access_key_id:     {{s3_vsphere_cpi_blobwriter_access_key}}
+        aws_secret_access_key: {{s3_vsphere_cpi_blobwriter_secret_key}}
 
-    - put: bosh-cpi-release-out
+    - put: bosh-cpi-src-out
       tags: ["vsphere-v5.1"]
-      params: {repository: promote/bosh-cpi-release, rebase: true, tag_prefix: "v", tag: promote/integer_version}
+      params: {repository: updated-repo/, rebase: true, tag_prefix: "v", tag: integer-version/tag-file}
 
     - put: release-version-semver
       tags: ["vsphere-v5.1"]
       params: {file: release-version-semver/number}
 
 resources:
-  - name: bosh-cpi-dev-artifacts
+  - name: bosh-cpi-artifacts
     type: s3
     source:
       regexp:            bosh-vsphere-cpi\.tgz
@@ -327,16 +180,16 @@ resources:
       access_key_id:     {{s3_vsphere_cpi_blobwriter_access_key}}
       secret_access_key: {{s3_vsphere_cpi_blobwriter_secret_key}}
 
-  - &bosh-cpi-release-resource
-    name: bosh-cpi-release
+  - &bosh-cpi-src-resource
+    name: bosh-cpi-src
     type: git
     source:
       uri:         git@github.com:cloudfoundry-incubator/bosh-vsphere-cpi-release.git
       branch:      master
       private_key: {{github_deployment_key__bosh-vsphere-cpi-release}}
 
-  - <<: *bosh-cpi-release-resource
-    name: bosh-cpi-release-out
+  - <<: *bosh-cpi-src-resource
+    name: bosh-cpi-src-out
 
   - name: version-semver
     type: semver
@@ -354,18 +207,6 @@ resources:
       access_key_id:     {{s3_vsphere_cpi_blobwriter_access_key}}
       secret_access_key: {{s3_vsphere_cpi_blobwriter_secret_key}}
 
-  - name: bosh-init
-    type: s3
-    source:
-      regexp:      bosh-init-([0-9.]+)-linux-amd64
-      bucket:      {{s3_bosh_init_bucket}}
-      region_name: us-east-1
-
-  - name: bosh-release
-    type: bosh-io-release
-    source:
-      repository: cloudfoundry/bosh
-
   - name: vsphere-ubuntu-stemcell
     type: bosh-io-stemcell
     source:
@@ -375,22 +216,3 @@ resources:
     type: bosh-io-stemcell
     source:
       name: bosh-vsphere-esxi-centos-7-go_agent
-
-  - name: bats
-    type: git
-    source:
-      uri:    https://github.com/cloudfoundry/bosh-acceptance-tests.git
-      branch: master
-
-  - name: vsphere-5.1-environment
-    type: pool
-    source:
-      pool: vsphere-5.1
-      uri: git@github.com:cloudfoundry/bosh-cpi-environments.git
-      branch: master
-      private_key: {{github_deployment_key__bosh-cpi-environments}}
-
-  - name: one-hour-timer
-    type: time
-    source:
-      interval: 1h

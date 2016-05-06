@@ -1,7 +1,7 @@
 require 'cloud/vsphere/resources/cluster'
 
 module VSphereCloud
-  class Resources
+  module Resources
     class Datacenter
       include VimSdk
       include ObjectStringifier
@@ -75,9 +75,47 @@ module VSphereCloud
         end
       end
 
+      def clusters_hash
+        available_clusters = {}
+        clusters.each do |cluster_name, cluster|
+          cluster_datastores = {}
+          cluster.all_datastores.each do |datastore_name, datastore|
+            cluster_datastores[datastore_name] = datastore.free_space
+          end
+          available_clusters[cluster_name] = {
+            memory: cluster.free_memory,
+            datastores: cluster_datastores
+          }
+        end
+        available_clusters
+      end
+
+      def datastores_hash
+        available_datastores = {}
+        clusters.each do |cluster_name, cluster|
+          cluster.all_datastores.each do |datastore_name, datastore|
+            available_datastores[datastore_name] = datastore.free_space
+          end
+        end
+        available_datastores
+      end
+
       def find_cluster(cluster_name)
         cluster_config = @clusters[cluster_name]
         @cluster_provider.find(cluster_name, cluster_config)
+      end
+
+      def find_datastore(datastore_name)
+        datastore = all_datastores[datastore_name]
+        raise "Can't find datastore '#{datastore_name}'" if datastore.nil?
+        datastore
+      end
+
+      def ephemeral_datastores
+        clusters.values.inject({}) do |acc, cluster|
+          acc.merge!(cluster.ephemeral_datastores)
+          acc
+        end
       end
 
       def persistent_datastores
@@ -94,28 +132,108 @@ module VSphereCloud
         end
       end
 
-      def pick_persistent_datastore(size)
-        weighted_datastores = []
-        persistent_datastores.each_value do |datastore|
-          if datastore.free_space - size >= DISK_HEADROOM
-            weighted_datastores << [datastore, datastore.free_space]
+      def disks_hash(cids)
+        disks = {}
+        cids.each do |cid|
+          disk = find_disk(cid)
+          datastore_name = disk.datastore.name
+          disks[datastore_name] = {} if disks[datastore_name].nil?
+          disks[datastore_name][cid] = disk.size_in_mb
+        end
+        disks
+      end
+
+      # TODO: do we care about datastore.allocate?
+      def create_disk(datastore, size_in_mb, type)
+        disk_type = type
+
+        if disk_type.nil?
+          disk_type = Resources::PersistentDisk::DEFAULT_DISK_TYPE
+        end
+
+        unless Resources::PersistentDisk::SUPPORTED_DISK_TYPES.include?(disk_type)
+          raise "Disk type: '#{disk_type}' is not supported"
+        end
+
+        disk_cid = "disk-#{SecureRandom.uuid}"
+        @logger.debug("Creating disk '#{disk_cid}' in datastore '#{datastore.name}'")
+
+        @client.create_disk(mob, datastore, disk_cid, @disk_path, size_in_mb, disk_type)
+      end
+
+      def find_disk(disk_cid)
+        @logger.debug("Looking for disk #{disk_cid} in datastores: #{persistent_datastores}")
+
+        disk = find_disk_cid_in_datastores(disk_cid, persistent_datastores)
+        return disk unless disk.nil?
+
+        other_datastores = all_datastores.reject{|datastore_name, _| persistent_datastores[datastore_name] }
+        @logger.debug("disk #{disk_cid} not found in filtered persistent datastores, trying other datastores: #{other_datastores}")
+        disk = find_disk_cid_in_datastores(disk_cid, other_datastores)
+        return disk unless disk.nil?
+
+        @logger.debug("disk #{disk_cid} not found in all datastores, searching VM attachments")
+        vm_mob = @client.find_vm_by_disk_cid(mob, disk_cid)
+        unless vm_mob.nil?
+          vm = Resources::VM.new(vm_mob.name, vm_mob, @client, @logger)
+          disk_path = vm.disk_path_by_cid(disk_cid)
+          datastore_name, disk_folder, disk_file = /\[(.+)\] (.+)\/(.+)\.vmdk/.match(disk_path)[1..3]
+          datastore = all_datastores[datastore_name]
+          disk = @client.find_disk(disk_file, datastore, disk_folder)
+
+          @logger.debug("disk #{disk_cid} found at new location: #{disk.path}") unless disk.nil?
+          return disk unless disk.nil?
+        end
+        raise Bosh::Clouds::DiskNotFound.new(false), "Could not find disk with id '#{disk_cid}'"
+      end
+
+      def move_disk_to_datastore(disk, destination_datastore)
+        destination_path = path(destination_datastore.name, @disk_path, disk.cid)
+        @logger.info("Moving #{disk.path} to #{destination_path}")
+        @client.move_disk(mob, disk.path, mob, destination_path)
+        @logger.info('Moved disk successfully')
+        Resources::PersistentDisk.new(disk.cid, disk.size_in_mb, destination_datastore, @disk_path)
+      end
+
+      private
+
+      def path(datastore_name, disk_path, disk_cid)
+        "[#{datastore_name}] #{disk_path}/#{disk_cid}.vmdk"
+      end
+
+      def find_disk_cid_in_datastores(disk_cid, datastores)
+        datastores.each do |_, datastore|
+          disk = @client.find_disk(disk_cid, datastore, @disk_path)
+          unless disk.nil?
+            @logger.debug("disk #{disk_cid} found in: #{datastore}")
+            return disk
           end
         end
+        nil
+      end
 
-        type = :persistent
-        datastores = persistent_datastores.values
-        available_datastores = datastores.reject { |datastore| datastore.free_space - size < DISK_HEADROOM }
+      class PersistentDiskIndex
+        def initialize(clusters, existing_persistent_disks)
+          @clusters_to_disks = Hash[*clusters.map do |cluster|
+              [cluster, existing_persistent_disks.select { |disk| cluster_includes_datastore?(cluster, disk.datastore) }]
+            end.flatten(1)]
 
-        @logger.debug("Looking for a '#{type}' datastore with #{size}MB free space.")
-        @logger.debug("All datastores within datacenter #{self.name}: #{datastores.map(&:debug_info)}")
-        @logger.debug("Datastores with enough space: #{available_datastores.map(&:debug_info)}")
-
-        selected_datastore = Util.weighted_random(available_datastores.map { |datastore| [datastore, datastore.free_space] })
-
-        if selected_datastore.nil?
-          raise Bosh::Clouds::NoDiskSpace.new(true), "Couldn't find a '#{type}' datastore with #{size}MB of free space. Found:\n #{datastores.map(&:debug_info).join("\n ")}\n"
+          @disks_to_clusters = Hash[*existing_persistent_disks.map do |disk|
+              [disk, clusters.select { |cluster| cluster_includes_datastore?(cluster, disk.datastore) }]
+            end.flatten(1)]
         end
-        selected_datastore
+
+        def cluster_includes_datastore?(cluster, datastore)
+          cluster.persistent(datastore.name) != nil
+        end
+
+        def disks_connected_to_cluster(cluster)
+          @clusters_to_disks[cluster]
+        end
+
+        def clusters_connected_to_disk(disk)
+          @disks_to_clusters[disk]
+        end
       end
     end
   end

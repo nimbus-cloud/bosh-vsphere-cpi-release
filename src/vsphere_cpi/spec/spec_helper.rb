@@ -1,3 +1,5 @@
+$LOAD_PATH.unshift File.expand_path('../../lib', __FILE__)
+
 require 'fakefs/spec_helpers'
 
 require 'cloud'
@@ -9,12 +11,10 @@ class VSphereSpecConfig
   attr_accessor :logger, :uuid
 end
 
-def by(message)
-  if block_given?
-    yield
-  else
-    pending message
+RSpec.configure do |config|
+  config.include Support
+
+  config.mock_with :rspec do |mocks|
+    mocks.verify_doubled_constant_names = true
   end
 end
-
-alias and_by by

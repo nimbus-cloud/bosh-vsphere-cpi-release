@@ -18,7 +18,7 @@ describe VSphereCloud::Resources::Datacenter do
   }
   let(:log_output) { StringIO.new("") }
   let(:logger) { Logger.new(log_output) }
-  let(:client) { instance_double('VSphereCloud::Client') }
+  let(:client) { instance_double('VSphereCloud::VCenterClient') }
 
   let(:vm_folder) { instance_double('VSphereCloud::Resources::Folder') }
   let(:vm_subfolder) { instance_double('VSphereCloud::Resources::Folder') }
@@ -36,6 +36,8 @@ describe VSphereCloud::Resources::Datacenter do
   let(:persistent_pattern) {instance_double('Regexp')}
   let(:cloud_searcher) { instance_double('VSphereCloud::CloudSearcher') }
   let(:datastore_properties) { {} }
+  let(:datastore) { instance_double('VSphereCloud::Resources::Datastore', name: 'fake-datastore') }
+  let(:disk) { instance_double('VSphereCloud::Resources::PersistentDisk', path: 'fake-disk-path') }
 
   let(:datacenter_name) { 'fake-datacenter-name' }
   before do
@@ -212,6 +214,60 @@ describe VSphereCloud::Resources::Datacenter do
     end
   end
 
+  describe '#clusters_hash' do
+    it 'returns a hash mapping from cluster name to a lightweight hash' do
+      first_datastore = instance_double(
+        'VSphereCloud::Resources::Datastore',
+        name: 'first-datastore',
+        free_space: 4000
+      )
+      second_datastore = instance_double(
+        'VSphereCloud::Resources::Datastore',
+        name: 'second-datastore',
+        free_space: 8000
+      )
+      third_datastore = instance_double(
+        'VSphereCloud::Resources::Datastore',
+        name: 'third-datastore',
+        free_space: 16000
+      )
+
+      allow(datacenter).to receive(:clusters).and_return({
+        'first-cluster' => instance_double('VSphereCloud::Resources::Cluster',
+          free_memory: 1024,
+          all_datastores: {
+            first_datastore.name => first_datastore,
+            third_datastore.name => third_datastore
+          },
+        ),
+        'second-cluster' => instance_double('VSphereCloud::Resources::Cluster',
+          free_memory: 2048,
+          all_datastores: {
+            first_datastore.name => first_datastore,
+            second_datastore.name => second_datastore
+          }
+        ),
+      })
+
+      expect(datacenter.clusters_hash).to eq({
+        'first-cluster' => {
+          memory: 1024,
+          datastores: {
+            'first-datastore' => 4000,
+            'third-datastore' => 16000
+          }
+        },
+        'second-cluster' => {
+          memory: 2048,
+          datastores: {
+            'first-datastore' => 4000,
+            'second-datastore' => 8000
+          }
+        }
+      })
+    end
+  end
+
   describe '#find_cluster' do
     context 'when cluster exists' do
       it 'return the cluster' do
@@ -235,6 +291,85 @@ describe VSphereCloud::Resources::Datacenter do
         ).and_return({ cluster_mob2 => {} })
 
         expect {datacenter.find_cluster('cluster1')}.to raise_error(/Can't find cluster 'cluster1'/)
+      end
+    end
+  end
+
+  describe '#datastores_hash' do
+    it 'returns a hash mapping from datastore name to free space' do
+      first_datastore = instance_double(
+        'VSphereCloud::Resources::Datastore',
+        name: 'first-datastore',
+        free_space: 4000
+      )
+      second_datastore = instance_double(
+        'VSphereCloud::Resources::Datastore',
+        name: 'second-datastore',
+        free_space: 8000
+      )
+      third_datastore = instance_double(
+        'VSphereCloud::Resources::Datastore',
+        name: 'third-datastore',
+        free_space: 16000
+      )
+
+      allow(datacenter).to receive(:clusters).and_return({
+        'first-cluster' => instance_double('VSphereCloud::Resources::Cluster',
+          all_datastores: {
+            first_datastore.name => first_datastore,
+            third_datastore.name => third_datastore
+          },
+        ),
+        'second-cluster' => instance_double('VSphereCloud::Resources::Cluster',
+          all_datastores: {
+            first_datastore.name => first_datastore,
+            second_datastore.name => second_datastore
+          }
+        ),
+      })
+
+      expect(datacenter.datastores_hash).to eq({
+        'first-datastore' => 4000,
+        'second-datastore' => 8000,
+        'third-datastore' => 16000,
+      })
+    end
+  end
+
+  describe '#find_datastore' do
+    context 'when datastore exists' do
+      it 'return the datastore' do
+        first_datastore = instance_double('VSphereCloud::Resources::Datastore', name: 'first-datastore')
+        second_datastore = instance_double('VSphereCloud::Resources::Datastore', name: 'second-datastore')
+        third_datastore = instance_double('VSphereCloud::Resources::Datastore', name: 'third-datastore')
+
+        allow(datacenter).to receive(:clusters).and_return({
+          'first-cluster' => instance_double('VSphereCloud::Resources::Cluster',
+            all_datastores: {
+              first_datastore.name => first_datastore,
+              third_datastore.name => third_datastore
+            },
+          ),
+          'second-cluster' => instance_double('VSphereCloud::Resources::Cluster',
+            all_datastores: {
+              first_datastore.name => first_datastore,
+              second_datastore.name => second_datastore
+            }
+          ),
+        })
+
+        datastore = datacenter.find_datastore('second-datastore')
+        expect(datastore).to eq(second_datastore)
+      end
+    end
+
+    context 'when datastore does not exist' do
+      it 'raises an exception' do
+        allow(datacenter).to receive(:clusters).and_return({})
+
+        expect{
+          datacenter.find_datastore('second-datastore')
+        }.to raise_error(/Can't find datastore 'second-datastore'/)
       end
     end
   end
@@ -297,6 +432,56 @@ describe VSphereCloud::Resources::Datacenter do
     end
   end
 
+  describe '#disks_hash' do
+    it 'returns a hash mapping from disk cid to free space on disks grouped under datastores' do
+      first_datastore = instance_double(
+        'VSphereCloud::Resources::Datastore',
+        name: 'first-datastore'
+      )
+      second_datastore = instance_double(
+        'VSphereCloud::Resources::Datastore',
+        name: 'second-datastore'
+      )
+
+      first_disk = instance_double(
+        VSphereCloud::Resources::Disk,
+        datastore: first_datastore,
+        size_in_mb: 1000
+      )
+      second_disk = instance_double(
+        VSphereCloud::Resources::Disk,
+        datastore: second_datastore,
+        size_in_mb: 2000
+      )
+      third_disk = instance_double(
+        VSphereCloud::Resources::Disk,
+        datastore: second_datastore,
+        size_in_mb: 4000
+      )
+
+      disk_cids = ['disk1', 'disk2', 'disk3']
+      allow(datacenter).to receive(:find_disk)
+        .with('disk1')
+        .and_return(first_disk)
+      allow(datacenter).to receive(:find_disk)
+        .with('disk2')
+        .and_return(second_disk)
+      allow(datacenter).to receive(:find_disk)
+        .with('disk3')
+        .and_return(third_disk)
+
+      expect(datacenter.disks_hash(disk_cids)).to eq({
+        'first-datastore' => {
+          'disk1' => 1000
+        },
+        'second-datastore' => {
+          'disk2' => 2000,
+          'disk3' => 4000
+        }
+      })
+    end
+  end
+
   describe '#vm_path' do
     it 'builds the vm path' do
       allow(vm_folder).to receive(:path_components) { ['vm-folder', 'path-components'] }
@@ -304,64 +489,145 @@ describe VSphereCloud::Resources::Datacenter do
     end
   end
 
-  describe '#pick_persistent_datastore' do
-    let(:persistent_pattern) { /ds/ }
-    let(:datastore_properties) do
-      bytes_in_mb = VSphereCloud::Resources::BYTES_IN_MB
-      disk_threshold = VSphereCloud::Resources::DISK_HEADROOM
-      {
-        'ds1' => { 'name' => 'ds1', 'summary.freeSpace' => (1024 + disk_threshold) * bytes_in_mb, 'summary.capacity' => 20000 * bytes_in_mb },
-        'ds2' => { 'name' => 'ds2', 'summary.freeSpace' => (2048 + disk_threshold) * bytes_in_mb, 'summary.capacity' => 20000 * bytes_in_mb  },
-        'ds32' => { 'name' => 'ds3', 'summary.freeSpace' => (512 + disk_threshold) * bytes_in_mb, 'summary.capacity' => 20000 * bytes_in_mb  },
-      }
+  describe '#to_s' do
+    it 'show relevant info' do
+      expect(subject.to_s).to eq("(#{subject.class.name} (name=\"fake-datacenter-name\"))")
+    end
+  end
+
+  describe '#create_disk' do
+    let(:virtual_disk_manager) { instance_double('VimSdk::Vim::VirtualDiskManager') }
+
+    before do
+      allow(SecureRandom).to receive(:uuid).and_return('cid')
+      allow(virtual_disk_manager).to receive(:create_virtual_disk)
     end
 
-    it 'returns datastore with weighted random from datastores with enough space' do
-      first_datastore = nil
-      expect(VSphereCloud::Resources::Util).to receive(:weighted_random) do |weighted_datastores|
-        expect(weighted_datastores.size).to eq(2)
-        first_datastore, first_weight = weighted_datastores.first
-        expect(first_datastore.name).to eq('ds1')
-        expect(first_weight).to eq(1024 + VSphereCloud::Resources::DISK_HEADROOM)
-
-        second_datastore, second_weight = weighted_datastores[1]
-        expect(second_datastore.name).to eq('ds2')
-        expect(second_weight).to eq(2048 + VSphereCloud::Resources::DISK_HEADROOM)
-
-        first_datastore
+    context 'when disk type is nil' do
+      it 'creates disk using VirtualDiskManager with default disk type' do
+        allow(client).to receive(:create_disk)
+                            .with(datacenter_mob, datastore, 'disk-cid', 'fake-disk-path', 24, 'preallocated')
+                            .and_return(disk)
+        expect(datacenter.create_disk(datastore, 24, nil)).to eq(disk)
       end
-      expect(datacenter.pick_persistent_datastore(1024)).to eq(first_datastore)
     end
 
-    it 'logs a bunch of debug info since it is really hard to know what happening otherwise' do
-      datacenter.pick_persistent_datastore(1024)
-
-      expect(log_output.string).to include "Looking for a 'persistent' datastore with 1024MB free space."
-      expect(log_output.string).to include 'All datastores within datacenter ' + datacenter.name + ': ["ds1 (2048MB free of 20000MB capacity)", "ds2 (3072MB free of 20000MB capacity)", "ds3 (1536MB free of 20000MB capacity)"]'
-      expect(log_output.string).to include 'Datastores with enough space: ["ds1 (2048MB free of 20000MB capacity)", "ds2 (3072MB free of 20000MB capacity)"]'
-    end
-
-    context 'and there is less persistent free space than the disk threshold' do
-      it 'raises a Bosh::Clouds::NoDiskSpace' do
+    context 'when disk type is invalid' do
+      it 'raises an error' do
         expect {
-          datacenter.pick_persistent_datastore(10000)
-        }.to raise_error do |error|
-          expect(error).to be_an_instance_of(Bosh::Clouds::NoDiskSpace)
-          expect(error.ok_to_retry).to be(true)
-          expect(error.message).to eq(<<-MSG)
-Couldn't find a 'persistent' datastore with 10000MB of free space. Found:
- ds1 (2048MB free of 20000MB capacity)
- ds2 (3072MB free of 20000MB capacity)
- ds3 (1536MB free of 20000MB capacity)
-          MSG
-        end
+          datacenter.create_disk(datastore, 24, 'invalid-type')
+        }.to raise_error("Disk type: 'invalid-type' is not supported")
+      end
+    end
+
+    context 'when disk type is valid' do
+      it 'creates disk using VirtualDiskManager with specified disk type' do
+        allow(client).to receive(:create_disk)
+                            .with(datacenter_mob, datastore, 'disk-cid', 'fake-disk-path', 24, 'thin')
+                            .and_return(disk)
+
+        expect(datacenter.create_disk(datastore, 24, 'thin')).to eq(disk)
       end
     end
   end
 
-  describe '#to_s' do
-    it 'show relevant info' do
-      expect(subject.to_s).to eq("(#{subject.class.name} (name=\"fake-datacenter-name\"))")
+  describe '#find_disk' do
+    let(:other_datastore) { instance_double(VSphereCloud::Resources::Datastore) }
+
+    before do
+      allow(datacenter).to receive(:persistent_datastores).and_return({
+            'datastore1' => datastore,
+            'datastore2' => other_datastore,
+          })
+      allow(datacenter).to receive(:all_datastores).and_return({
+            'datastore1' => datastore,
+            'datastore2' => other_datastore,
+          })
+    end
+
+    context 'when disk exists in persistent datastore' do
+      before do
+        allow(client).to receive(:find_disk).with('disk-cid', datastore, 'fake-disk-path') { disk }
+        allow(client).to receive(:find_disk).with('disk-cid', other_datastore, 'fake-disk-path') { nil }
+      end
+
+      it 'returns disk' do
+        expect(datacenter.find_disk('disk-cid')).to eq(disk)
+      end
+    end
+
+    context 'when disk exists in some other datastore' do
+      before do
+        allow(client).to receive(:find_disk).with('disk-cid', datastore, 'fake-disk-path') { nil }
+        allow(client).to receive(:find_disk).with('disk-cid', other_datastore, 'fake-disk-path') { disk }
+      end
+
+      it 'returns disk' do
+        expect(datacenter.find_disk('disk-cid')).to eq(disk)
+      end
+    end
+
+    context 'when disk exists but cannot be found in datastores' do
+      before do
+        allow(client).to receive(:find_disk).with('disk-cid', datastore, 'fake-disk-path') { nil }
+        allow(client).to receive(:find_disk).with('disk-cid', other_datastore, 'fake-disk-path') { nil }
+
+        vm_mob = instance_double('VimSdk::Vim::VirtualMachine', name: 'fake-vm-name')
+        allow(client).to receive(:find_vm_by_disk_cid).with(datacenter_mob, 'disk-cid').and_return(vm_mob)
+
+        vm = instance_double(
+          'VSphereCloud::Resources::VM',
+        )
+        allow(vm).to receive(:disk_path_by_cid).with('disk-cid')
+          .and_return("[datastore1] fake-disk-path/fake-file_name.vmdk")
+        allow(VSphereCloud::Resources::VM).to receive(:new)
+          .with('fake-vm-name', vm_mob, client, logger)
+          .and_return(vm)
+
+        allow(client).to receive(:find_disk)
+          .with('fake-file_name', datastore, 'fake-disk-path')
+          .and_return(disk)
+      end
+
+      it 'returns the disk' do
+        expect(datacenter.find_disk('disk-cid')).to eq(disk)
+      end
+    end
+
+    context 'when disk does not exist' do
+      before do
+        allow(client).to receive(:find_disk).with('disk-cid', datastore, 'fake-disk-path') { nil }
+        allow(client).to receive(:find_disk).with('disk-cid', other_datastore, 'fake-disk-path') { nil }
+
+        allow(client).to receive(:find_vm_by_disk_cid).with(datacenter_mob, 'disk-cid').and_return(nil)
+      end
+
+      it 'raises DiskNotFound' do
+        expect {
+          datacenter.find_disk('disk-cid')
+        }.to raise_error { |error|
+            expect(error).to be_a(Bosh::Clouds::DiskNotFound)
+            expect(error.ok_to_retry).to eq(false)
+            expect(error.message).to match(/Could not find disk with id 'disk-cid'/)
+          }
+      end
+    end
+  end
+
+  describe '#move_disk_to_datastore' do
+    let(:disk) do
+      instance_double(
+        VSphereCloud::Resources::PersistentDisk,
+        path: "[old-datastore] fake-disk-path/fake-disk-cid.vmdk",
+        cid: 'fake-disk-cid',
+        size_in_mb: 1024,
+      )
+    end
+    it 'forwards the call to the client with the correct args' do
+      target_path = "[#{datastore.name}] fake-disk-path/fake-disk-cid.vmdk"
+      expect(client).to receive(:move_disk).with(datacenter_mob, disk.path, datacenter_mob, target_path)
+      new_disk = datacenter.move_disk_to_datastore(disk, datastore)
+      expect(new_disk.path).to eq(target_path)
     end
   end
 end

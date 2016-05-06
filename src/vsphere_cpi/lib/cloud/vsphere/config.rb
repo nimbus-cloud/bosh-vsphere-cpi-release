@@ -40,7 +40,7 @@ module VSphereCloud
     def client
       unless @client
         host = "https://#{vcenter['host']}/sdk/vimService"
-        @client = Client.new(host, soap_log: soap_log)
+        @client = VCenterClient.new(host, soap_log: soap_log)
 
         @client.login(vcenter['user'], vcenter['password'], 'en')
       end
@@ -54,9 +54,7 @@ module VSphereCloud
 
     def rest_client
       unless @rest_client
-        @rest_client = HTTPClient.new
-        @rest_client.send_timeout = 14400 # 4 hours, for stemcell uploads
-        @rest_client.ssl_config.verify_mode = OpenSSL::SSL::VERIFY_NONE
+        @rest_client = VSphereCloud::CpiHttpClient.build
 
         # HACK: read the session from the SOAP client so we don't leak sessions
         # when using the REST client

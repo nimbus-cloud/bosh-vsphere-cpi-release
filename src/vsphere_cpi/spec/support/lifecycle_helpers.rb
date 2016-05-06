@@ -29,13 +29,16 @@ class LifecycleHelpers
   ALLOWED_PRIVILEGES_ON_ROOT = [
     'System.Anonymous',
     'System.Read',
-    'System.View'
+    'System.View',
+    'Global.ManageCustomFields'
   ]
 
   ALLOWED_PRIVILEGES_ON_DATACENTER = [
     'System.Anonymous',
     'System.Read',
     'System.View',
+
+    'Global.SetCustomField',
 
     'Folder.Create',
     'Folder.Delete',
@@ -47,6 +50,8 @@ class LifecycleHelpers
     'Datastore.DeleteFile',
     'Datastore.UpdateVirtualMachineFiles',
     'Datastore.FileManagement',
+
+    'Host.Inventory.EditCluster',
 
     'Network.Assign',
 
@@ -114,7 +119,13 @@ class LifecycleHelpers
     'Resource.ColdMigrate',
     'Resource.HotMigrate',
 
-    'VApp.Import'
+    'VApp.Import',
+    'VApp.InstanceConfig',
+    'VApp.ApplicationConfig',
+
+    'InventoryService.Tagging.CreateTag',
+    'InventoryService.Tagging.DeleteTag',
+    'InventoryService.Tagging.EditTag',
   ]
 
   class << self
@@ -125,8 +136,8 @@ class LifecycleHelpers
       value
     end
 
-    def fetch_optional_property(property)
-      ENV[property]
+    def fetch_optional_property(property, default = nil)
+      ENV[property] || default
     end
 
     def verify_vsphere_version(cpi_options, expected_version)

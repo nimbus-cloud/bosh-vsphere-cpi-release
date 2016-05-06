@@ -1,6 +1,7 @@
 ---
 name: vsphere_cpi
 templates:
+  cacert.pem.erb: config/cacert.pem
   cpi.erb: bin/cpi
   cpi.json.erb: config/cpi.json
 
@@ -18,6 +19,12 @@ properties:
     description: Password to connect to vCenter server used by vspher cpi
   vcenter.datacenters:
     description: Datacenters in vCenter to use (value is an array of Hashes representing datacenters and clusters, See director.yml.erb.erb)
+  vcenter.connection_options.ca_cert:
+    description: All required custom CA certificates
+    example:
+      -----BEGIN CERTIFICATE-----
+      MII...
+      -----END CERTIFICATE-----
   ntp:
     description: List of ntp server IPs. pool.ntp.org attempts to return IPs closest to your location, but you can still specify if needed.
     default:
@@ -35,6 +42,8 @@ properties:
     description: Address for agent to connect to blobstore server used by simple blobstore plugin
   agent.blobstore.use_ssl:
     description: Whether the agent blobstore plugin should use SSL to connect to the blobstore server
+  agent.blobstore.s3_region:
+    description: AWS region used by s3 blobstore plugin
   agent.blobstore.s3_port:
     description: Port of agent blobstore server used by s3 blobstore plugin
   agent.blobstore.host:
@@ -45,6 +54,8 @@ properties:
     description: Whether the agent blobstore plugin should verify its peer when using SSL
   agent.blobstore.s3_multipart_threshold:
     description: Agent blobstore threshold for multipart uploads
+  agent.blobstore.s3_signature_version:
+    description: Signature version used to connect to an s3 blobstore
   blobstore.provider:
     description: Provider of the blobstore used by director and agent (dav|simple|s3)
     default: 'dav'
@@ -57,6 +68,8 @@ properties:
   blobstore.use_ssl:
     description: Whether the simple blobstore plugin should use SSL to connect to the blobstore server
     default: true
+  blobstore.s3_region:
+    description: AWS region used by s3 blobstore plugin
   blobstore.s3_port:
     description: Port of blobstore server used by s3 blobstore plugin
     default: 443
@@ -76,6 +89,8 @@ properties:
   blobstore.port:
     description: Port of blobstore server used by simple blobstore plugin
     default: 25250
+  blobstore.s3_signature_version:
+    description: Signature version used to connect to an s3 blobstore
   blobstore.agent.user:
     description: Username agent uses to connect to blobstore used by simple blobstore plugin
   blobstore.agent.password:

@@ -1,38 +1,36 @@
 require 'spec_helper'
 
 module VSphereCloud
-  describe Client do
+  describe VCenterClient do
     describe "#find_disk" do
+
+      before do
+        @disk_cid = "disk-#{SecureRandom.uuid}"
+
+        @client, @datacenter, @datastore, @disk_folder = setup
+
+        @disk = @client.create_disk(@datacenter.mob, @datastore, @disk_cid, @disk_folder, 128, Resources::PersistentDisk::DEFAULT_DISK_TYPE)
+      end
+
+      after do
+        @client.delete_disk(@datacenter.mob, @disk.path)
+      end
+
       it "returns the disk if it exists" do
-        disk_cid = "disk-#{SecureRandom.uuid}"
+        disk = @client.find_disk(@disk_cid, @datastore, @disk_folder)
 
-        client, datacenter, datastore, disk_folder = setup
-
-        client.create_disk(datacenter, datastore, disk_cid, disk_folder, 128, DiskProvider::DEFAULT_DISK_TYPE)
-        disk = client.find_disk(disk_cid, datastore, disk_folder)
-
-        expect(disk.cid).to eq(disk_cid)
+        expect(disk.cid).to eq(@disk_cid)
         expect(disk.size_in_mb).to eq(128)
       end
 
       it "returns nil when the disk can't be found" do
-        disk_cid = "disk-#{SecureRandom.uuid}"
-
-        client, datacenter, datastore, disk_folder = setup
-
-        client.create_disk(datacenter, datastore, disk_cid, disk_folder, 128, DiskProvider::DEFAULT_DISK_TYPE)
-        disk = client.find_disk("not-the-#{disk_cid}", datastore, disk_folder)
+        disk = @client.find_disk("not-the-#{@disk_cid}", @datastore, @disk_folder)
 
         expect(disk).to be_nil
       end
 
       it "returns nil when the disk folder doesn't exit" do
-        disk_cid = "disk-#{SecureRandom.uuid}"
-
-        client, datacenter, datastore, disk_folder = setup
-
-        client.create_disk(datacenter, datastore, disk_cid, disk_folder, 128, DiskProvider::DEFAULT_DISK_TYPE)
-        disk = client.find_disk(disk_cid, datastore, "the-wrong-disk-folder")
+        disk = @client.find_disk(@disk_cid, @datastore, "the-wrong-disk-folder")
 
         expect(disk).to be_nil
       end
@@ -54,7 +52,7 @@ module VSphereCloud
       cluster_configs = {cluster_name => ClusterConfig.new(cluster_name, {'resource_pool' => resource_pool_name})}
       logger = Logger.new(StringIO.new(""))
 
-      client = Client.new("https://#{host}/sdk/vimService", logger: logger)
+      client = VCenterClient.new("https://#{host}/sdk/vimService", logger: logger)
       client.login(user, password, 'en')
 
       datacenter = Resources::Datacenter.new({

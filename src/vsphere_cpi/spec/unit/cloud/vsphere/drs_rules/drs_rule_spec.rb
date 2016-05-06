@@ -1,4 +1,4 @@
-require 'cloud/vsphere/drs_rules/drs_rule'
+require 'spec_helper'
 
 describe VSphereCloud::DrsRule do
   subject(:drs_rule) do
@@ -10,7 +10,7 @@ describe VSphereCloud::DrsRule do
       logger
     )
   end
-  let(:client) { instance_double('VSphereCloud::Client') }
+  let(:client) { instance_double('VSphereCloud::VCenterClient') }
   before do
     allow(client).to receive(:service_content).and_return(service_content)
     allow(client).to receive(:wait_for_task).with(task)
