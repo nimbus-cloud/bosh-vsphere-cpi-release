@@ -16,6 +16,7 @@ module VSphereCloud
     let(:cluster_name) { 'grubby-cluster' }
     let(:cluster_name_witout_resource_pool) { 'shiny-cluster' }
     let(:resource_pool) { 'wading-pool' }
+    let(:default_disk_type) { 'preallocated' }
     let(:datacenters) do
       [{
          'name' => datacenter_name,
@@ -31,6 +32,9 @@ module VSphereCloud
        }]
     end
     let(:service_content) { double(:service_content) }
+    let(:nsx_url) { 'fake-nsx-url' }
+    let(:nsx_user) { 'fake-nsx-user' }
+    let(:nsx_password) { 'fake-nsx-password' }
     before do
       allow(VimSdk::Vim::ServiceInstance).to receive(:new).
         and_return(double(:service_instance, content: service_content))
@@ -43,7 +47,13 @@ module VSphereCloud
           'host' => host,
           'user' => user,
           'password' => password,
+          'default_disk_type' => default_disk_type,
           'datacenters' => datacenters,
+          'nsx' => {
+            'address' => nsx_url,
+            'user' => nsx_user,
+            'password' => nsx_password,
+          }
         ],
         'soap_log' => 'fake-soap-log'
       }
@@ -125,108 +135,47 @@ module VSphereCloud
           end.to raise_error(Membrane::SchemaValidationError)
         end
       end
+
+      context 'when the vcenter_default_disk_type is missing' do
+        let(:default_disk_type) { nil }
+        it 'raises an error' do
+          expect do
+            config.validate
+          end.to raise_error(RuntimeError, /default_disk_type/)
+        end
+      end
+
+      context 'when the vcenter_default_disk_type is an invalid type' do
+        let(:default_disk_type) { 'invalid-type' }
+        it 'returns value from config' do
+          expect do
+            config.validate
+          end.to raise_error(RuntimeError, /invalid-type/)
+        end
+      end
+
+      context 'when the vcenter_default_disk_type is "thin"' do
+        let(:default_disk_type) { 'thin' }
+        it 'returns value from config' do
+          expect do
+            config.validate
+          end.to_not raise_error
+        end
+      end
+
+      context 'when the vcenter_default_disk_type is "preallocated"' do
+        let(:default_disk_type) { 'preallocated' }
+        it 'returns value from config' do
+          expect do
+            config.validate
+          end.to_not raise_error
+        end
+      end
     end
 
     describe '#logger' do
       it 'delegates to global Config.logger' do
         expect(config.logger).to eq(logger)
-      end
-    end
-
-    describe '#client' do
-      let(:client) { instance_double('VSphereCloud::VCenterClient') }
-
-      before do
-        allow(VCenterClient).to receive(:new).with('https://some-host/sdk/vimService', soap_log: 'fake-soap-log').and_return(client)
-      end
-
-      context 'when the client has not been created yet' do
-        it 'returns a new VSphereCloud::VCenterClient built from correct params' do
-          expect(client).to receive(:login).with(user, password, 'en')
-
-          expect(config.client).to eq(client)
-        end
-      end
-
-      context 'when the client has already been created' do
-        before do
-          allow(client).to receive(:login).with(user, password, 'en')
-          config.client
-        end
-
-        it 'caches client for thread safety' do
-          expect(VCenterClient).to_not receive(:new)
-          config.client
-        end
-      end
-    end
-
-    describe '#rest_client' do
-      let(:rest_client) do
-        instance_double(
-          'HTTPClient',
-          ssl_config: ssl_config,
-          cookie_manager: cookie_manager,
-          :receive_timeout= => nil,
-          :connect_timeout= => nil
-        )
-      end
-      let(:cookie_manager) { instance_double('WebAgent::CookieManager', parse: nil) }
-      let(:ssl_config) { instance_double('HTTPClient::SSLConfig') }
-      let(:client) { instance_double('VSphereCloud::VCenterClient', login: nil, soap_stub: soap_stub) }
-      let(:soap_stub) { double(:stub_adapter, cookie: 'fake-cookie') }
-
-      before do
-        allow(HTTPClient).to receive(:new).exactly(2).times.and_return(rest_client)
-        allow(rest_client).to receive(:send_timeout=).with(14400)
-        allow(ssl_config).to receive(:verify_mode=).with(OpenSSL::SSL::VERIFY_NONE)
-        allow(VCenterClient).to receive(:new).with('https://some-host/sdk/vimService', soap_log: 'fake-soap-log').and_return(client)
-      end
-
-      context 'when the rest client has not been created yet' do
-        it 'sets send_timeout to 1400' do
-          expect(rest_client).to receive(:send_timeout=).with(14400)
-          config.rest_client
-        end
-
-        it 'sets SSL verify mode to none' do
-          expect(ssl_config).to receive(:verify_mode=).with(OpenSSL::SSL::VERIFY_NONE)
-          config.rest_client
-        end
-
-        it 'copies the cookie from the SOAP client to the rest client' do
-          expect(cookie_manager).to receive(:parse).with('fake-cookie', URI.parse("https://some-host"))
-          config.rest_client
-        end
-
-        it 'returns a new configured HTTPClient from hell' do
-          expect(config.rest_client).to eq(rest_client)
-        end
-      end
-
-      context 'when the rest client has already been created' do
-        before { config.rest_client }
-
-        it 'uses the cached client' do
-          expect(HTTPClient).to_not receive(:new)
-          config.rest_client
-        end
-      end
-    end
-
-    describe '#mem_overcommit' do
-      context 'when set in config' do
-        before { config_hash.merge!({ 'mem_overcommit_ratio' => 5.0 }) }
-
-        it 'returns value set in config' do
-          expect(config.mem_overcommit).to eql(5.0)
-        end
-      end
-
-      context 'when not set in config' do
-        it 'defaults to 1.0' do
-          expect(config.mem_overcommit).to eql(1.0)
-        end
       end
     end
 
@@ -242,6 +191,12 @@ module VSphereCloud
       end
     end
 
+    describe '#vcenter_api_uri' do
+      it 'returns vcenter API endpoint as URI' do
+        expect(config.vcenter_api_uri).to eq(URI.parse("https://#{host}/sdk/vimService"))
+      end
+    end
+
     describe '#vcenter_user' do
       it 'returns value from config' do
         expect(config.vcenter_user).to eq(user)
@@ -251,6 +206,15 @@ module VSphereCloud
     describe '#vcenter_password' do
       it 'returns value from config' do
         expect(config.vcenter_password).to eq(password)
+      end
+    end
+
+    describe '#vcenter_default_disk_type' do
+      context 'when the vcenter_default_disk_type is "thin"' do
+        let(:default_disk_type) { 'thin' }
+        it 'returns value from config' do
+          expect(config.vcenter_default_disk_type).to eq('thin')
+        end
       end
     end
 
@@ -280,13 +244,13 @@ module VSphereCloud
 
     describe '#datacenter_datastore_pattern' do
       it 'returns the datacenter datastore pattern ' do
-        expect(config.datacenter_datastore_pattern).to eq(Regexp.new('fancy-datastore*'))
+        expect(config.datacenter_datastore_pattern).to eq('fancy-datastore*')
       end
     end
 
     describe '#datacenter_persistent_datastore_pattern' do
       it 'returns the datacenter persistent datastore pattern ' do
-        expect(config.datacenter_persistent_datastore_pattern).to eq(Regexp.new(persistent_datastore_pattern))
+        expect(config.datacenter_persistent_datastore_pattern).to eq(persistent_datastore_pattern)
       end
     end
 
@@ -386,6 +350,44 @@ module VSphereCloud
         it 'returns true' do
           expect(config.datacenter_use_sub_folder).to eq(true)
         end
+      end
+    end
+
+    describe '#validate_nsx_options' do
+      it 'returns true if all nsx options are present' do
+        expect(config.validate_nsx_options).to be(true)
+      end
+
+      context 'when required NSX properties are missing' do
+        before do
+          config_hash['vcenters'].first['nsx'] = {}
+        end
+
+        it 'returns an error' do
+          expect {
+            config.validate_nsx_options
+          }.to raise_error do |err|
+            expect(err.message).to include('address', 'user', 'password')
+          end
+        end
+      end
+    end
+
+    describe '#nsx_uri' do
+      it 'returns value from config' do
+        expect(config.nsx_url).to eq(nsx_url)
+      end
+    end
+
+    describe '#nsx_user' do
+      it 'returns value from config' do
+        expect(config.nsx_user).to eq(nsx_user)
+      end
+    end
+
+    describe '#nsx_password' do
+      it 'returns value from config' do
+        expect(config.nsx_password).to eq(nsx_password)
       end
     end
 

@@ -1,24 +1,26 @@
 module VSphereCloud
   class VmCreator
-    def initialize(client:, cloud_searcher:, logger:, cpi:, datacenter:, agent_env:, ip_conflict_detector:)
+    def initialize(client:, cloud_searcher:, logger:, cpi:, datacenter:, cluster_provider:, agent_env:, ip_conflict_detector:, default_disk_type:, enable_auto_anti_affinity_drs_rules:)
       @client = client
       @cloud_searcher = cloud_searcher
       @logger = logger
       @cpi = cpi
       @datacenter = datacenter
+      @cluster_provider = cluster_provider
       @agent_env = agent_env
       @ip_conflict_detector = ip_conflict_detector
+      @default_disk_type = default_disk_type
+      @enable_auto_anti_affinity_drs_rules = enable_auto_anti_affinity_drs_rules
     end
 
     def create(vm_config)
-      # TODO: Remove this once we handle placement resources better
-      if vm_config.is_top_level_cluster
+      if vm_config.has_custom_cluster_properties?
         cluster_config = ClusterConfig.new(vm_config.cluster_name, vm_config.cluster_spec)
-        cluster = Resources::ClusterProvider.new(@datacenter, @client, @logger).find(vm_config.cluster_name, cluster_config)
+        cluster = @cluster_provider.find(vm_config.cluster_name, cluster_config)
       else
         cluster = @datacenter.find_cluster(vm_config.cluster_name)
       end
-      datastore = @datacenter.find_datastore(vm_config.datastore_name)
+      datastore = @datacenter.find_datastore(vm_config.ephemeral_datastore_name)
 
       @ip_conflict_detector.ensure_no_conflicts(vm_config.vsphere_networks)
 
@@ -40,19 +42,24 @@ module VSphereCloud
       config_spec.device_change = []
 
       ephemeral_disk = Resources::EphemeralDisk.new(
-        Resources::EphemeralDisk::DISK_NAME,
-        vm_config.ephemeral_disk_size,
-        datastore,
-        vm_config.name
+        size_in_mb: vm_config.ephemeral_disk_size,
+        datastore: datastore,
+        folder: vm_config.name,
+        disk_type: @default_disk_type,
       )
 
-      ephemeral_disk_config = ephemeral_disk.create_disk_attachment_spec(replicated_stemcell_vm.system_disk.controller_key)
+      ephemeral_disk_config = ephemeral_disk.create_disk_attachment_spec(
+        disk_controller_id: replicated_stemcell_vm.system_disk.controller_key,
+      )
       config_spec.device_change << ephemeral_disk_config
 
       dvs_index = {}
       vm_config.vsphere_networks.each do |network_name, ips|
+        network_mob = @client.find_network(@datacenter, network_name)
+        if network_mob.nil?
+          raise "Unable to find network '#{network_name}'. Verify that the portgroup exists."
+        end
         ips.each do |_|
-          network_mob = @client.find_by_inventory_path([@datacenter.name, 'network', network_name])
           virtual_nic = Resources::Nic.create_virtual_nic(
             @cloud_searcher,
             network_name,
@@ -75,16 +82,17 @@ module VSphereCloud
       @logger.info("Cloning vm: #{replicated_stemcell_vm} to #{vm_config.name}")
 
       # Clone VM
-      task = @cpi.clone_vm(replicated_stemcell_vm.mob,
-        vm_config.name,
-        @datacenter.vm_folder.mob,
-        cluster.resource_pool.mob,
-        datastore: datastore.mob,
-        linked: true,
-        snapshot: snapshot.current_snapshot,
-        config: config_spec
-      )
-      created_vm_mob = @client.wait_for_task(task)
+      created_vm_mob = @client.wait_for_task do
+        @cpi.clone_vm(replicated_stemcell_vm.mob,
+          vm_config.name,
+          @datacenter.vm_folder.mob,
+          cluster.resource_pool.mob,
+          datastore: datastore.mob,
+          linked: true,
+          snapshot: snapshot.current_snapshot,
+          config: config_spec
+        )
+      end
       created_vm = Resources::VM.new(vm_config.name, created_vm_mob, @client, @logger)
 
       # Set agent env settings
@@ -93,7 +101,6 @@ module VSphereCloud
         disk_env = @cpi.generate_disk_env(created_vm.system_disk, ephemeral_disk_config.device)
         env = @cpi.generate_agent_env(vm_config.name, created_vm.mob, vm_config.agent_id, network_env, disk_env)
         env['env'] = vm_config.agent_env
-        @logger.info("Setting VM env: #{env.pretty_inspect}")
 
         location = @cpi.get_vm_location(
           created_vm.mob,
@@ -121,16 +128,26 @@ module VSphereCloud
         raise e
       end
 
-      vm_config.name
+      created_vm
     end
 
     private
 
+    def should_create_auto_drs_rule(vm_config)
+      return @enable_auto_anti_affinity_drs_rules && vm_config.drs_rule.nil? && !vm_config.bosh_group.nil?
+    end
+
     def create_drs_rules(vm_config, vm_mob, cluster)
-      return if vm_config.drs_rule.nil?
+      if should_create_auto_drs_rule(vm_config) then
+        drs_rule_name = vm_config.bosh_group
+      elsif !vm_config.drs_rule.nil? then
+        drs_rule_name = vm_config.drs_rule['name']
+      else
+        return
+      end
 
       drs_rule = VSphereCloud::DrsRule.new(
-        vm_config.drs_rule['name'],
+        drs_rule_name,
         @client,
         @cloud_searcher,
         cluster.mob,

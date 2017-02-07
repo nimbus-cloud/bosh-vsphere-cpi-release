@@ -4,13 +4,15 @@
     "cloud" => {
       "plugin" => "vsphere",
       "properties" => {
-        "mem_overcommit_ratio" => 0.7,
         "vcenters" => [
           {
             "host" => p('vcenter.address'),
             "user" => p('vcenter.user'),
             "password" => p('vcenter.password'),
-            "datacenters" => []
+            "datacenters" => [],
+            "default_disk_type" => p('vcenter.default_disk_type'),
+            "enable_auto_anti_affinity_drs_rules" => p('vcenter.enable_auto_anti_affinity_drs_rules'),
+            "http_logging" => p('vcenter.http_logging')
           }
         ],
         "agent" => {
@@ -54,6 +56,14 @@
     end
   end
 
+  if_p('vcenter.nsx.address') do
+    vcenter = params['cloud']['properties']['vcenters'].first
+    vcenter['nsx'] = {
+      'address' => p('vcenter.nsx.address'),
+      'user' => p('vcenter.nsx.user'),
+      'password' => p('vcenter.nsx.password'),
+    }
+  end
 
   if_p('blobstore') do
     if p('blobstore.provider') == "s3"

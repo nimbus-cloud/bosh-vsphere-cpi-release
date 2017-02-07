@@ -4,10 +4,6 @@ module VSphereCloud::Resources
   describe Cluster do
     subject(:cluster) do
       VSphereCloud::Resources::Cluster.new(
-        datacenter,
-        /eph/,
-        /persist/,
-        1.0,
         cluster_config,
         properties,
         logger,
@@ -49,10 +45,11 @@ module VSphereCloud::Resources
     end
     let(:fake_resource_pool_mob) { instance_double('VimSdk::Vim::ResourcePool') }
 
-    let(:ephemeral_store_properties) { {'name' => 'ephemeral_1', 'summary.freeSpace' => 15000 * BYTES_IN_MB} }
-    let(:ephemeral_store_2_properties) { {'name' => 'ephemeral_2', 'summary.freeSpace' => 25000 * BYTES_IN_MB} }
-    let(:persistent_store_properties) { {'name' => 'persistent_1', 'summary.freeSpace' => 10000 * BYTES_IN_MB, 'summary.capacity' => 20000 * BYTES_IN_MB} }
-    let(:persistent_store_2_properties) { {'name' => 'persistent_2', 'summary.freeSpace' => 20000 * BYTES_IN_MB, 'summary.capacity' => 40000 * BYTES_IN_MB} }
+    let(:ephemeral_store_properties) { {'name' => 'ephemeral_1', 'summary.accessible' => true, 'summary.freeSpace' => 15000 * BYTES_IN_MB} }
+    let(:ephemeral_store_2_properties) { {'name' => 'ephemeral_2', 'summary.accessible' => true, 'summary.freeSpace' => 25000 * BYTES_IN_MB} }
+    let(:persistent_store_properties) { {'name' => 'persistent_1', 'summary.accessible' => true, 'summary.freeSpace' => 10000 * BYTES_IN_MB, 'summary.capacity' => 20000 * BYTES_IN_MB} }
+    let(:persistent_store_2_properties) { {'name' => 'persistent_2',  'summary.accessible' => true, 'summary.freeSpace' => 20000 * BYTES_IN_MB, 'summary.capacity' => 40000 * BYTES_IN_MB} }
+    let(:inaccessible_persistent_store_properties) { {'name' => 'persistent_inaccess', 'summary.accessible' => false} }
 
     let(:other_store_properties) { { 'name' => 'other' } }
 
@@ -62,6 +59,7 @@ module VSphereCloud::Resources
         instance_double('VimSdk::Vim::Datastore') => ephemeral_store_2_properties,
         instance_double('VimSdk::Vim::Datastore') => persistent_store_properties,
         instance_double('VimSdk::Vim::Datastore') => persistent_store_2_properties,
+        instance_double('VimSdk::Vim::Datastore') => inaccessible_persistent_store_properties,
         instance_double('VimSdk::Vim::Datastore') => other_store_properties,
       }
     end
@@ -89,49 +87,14 @@ module VSphereCloud::Resources
       })
     end
 
-    describe '#ephemeral_datastores' do
-      it 'filters the full list of datastores based on the datacenter_datastore_pattern' do
-        ephemeral_datastores = cluster.ephemeral_datastores
-        expect(ephemeral_datastores.keys).to match_array(['ephemeral_1', 'ephemeral_2'])
-        expect(ephemeral_datastores['ephemeral_1'].name).to eq('ephemeral_1')
-        expect(ephemeral_datastores['ephemeral_2'].name).to eq('ephemeral_2')
-      end
-
-      context 'when there are no datastores' do
-        let(:fake_datastore_properties) { {} }
-
-        it 'it returns an empty list when there are no datastores' do
-          expect(cluster.ephemeral_datastores).to eq({})
-        end
-      end
-    end
-
-    describe '#persistent_datastores' do
-      it 'filters the full list of datastores based on the datacenter_persistent_datastore_pattern' do
-        persistent_datastores = cluster.persistent_datastores
-        expect(persistent_datastores.keys).to match_array(['persistent_1', 'persistent_2'])
-        expect(persistent_datastores['persistent_1'].name).to eq('persistent_1')
-        expect(persistent_datastores['persistent_2'].name).to eq('persistent_2')
-      end
-
-      context 'when there are no datastores' do
-        let(:fake_datastore_properties) { {} }
-
-        it 'it returns an empty list when there are no datastores' do
-          expect(cluster.persistent_datastores).to eq({})
-        end
-      end
-    end
-
-    describe '#all_datastores' do
-      it 'returns the full list of datastores' do
-        all_datastores = cluster.all_datastores
-        expect(all_datastores.keys).to match_array(%w(persistent_1 persistent_2 ephemeral_1 ephemeral_2 other))
-        expect(all_datastores['persistent_1'].name).to eq('persistent_1')
-        expect(all_datastores['persistent_2'].name).to eq('persistent_2')
-        expect(all_datastores['ephemeral_1'].name).to eq('ephemeral_1')
-        expect(all_datastores['ephemeral_2'].name).to eq('ephemeral_2')
-        expect(all_datastores['other'].name).to eq('other')
+    describe '#accessible_datastores' do
+      it 'returns the full list of datastores without inaccessible stores' do
+        accessible_datastores = cluster.accessible_datastores
+        expect(accessible_datastores.keys).to match_array(%w(persistent_1 persistent_2 ephemeral_1 ephemeral_2))
+        expect(accessible_datastores['persistent_1'].name).to eq('persistent_1')
+        expect(accessible_datastores['persistent_2'].name).to eq('persistent_2')
+        expect(accessible_datastores['ephemeral_1'].name).to eq('ephemeral_1')
+        expect(accessible_datastores['ephemeral_2'].name).to eq('ephemeral_2')
       end
     end
 
@@ -165,104 +128,134 @@ module VSphereCloud::Resources
       end
 
       context 'when we are using clusters directly' do
-        def generate_host_property(mob, maintenance_mode, memory_size)
+        def generate_host_property(mob:, name:, connection_state:, maintenance_mode:, memory_size:, power_state:)
           {
             mob => {
-              'runtime.inMaintenanceMode' => maintenance_mode ? 'true' : 'false',
-              :obj => mob,
+              'name' => name,
               'hardware.memorySize' => memory_size,
+              'runtime.connectionState' => connection_state,
+              'runtime.inMaintenanceMode' => maintenance_mode ? 'true' : 'false',
+              'runtime.powerState' => power_state,
+              :obj => mob,
             }
           }
-        end
-
-        let(:inactive_host_properties) do
-          {}.merge(
-            generate_host_property(instance_double('VimSdk::Vim::ClusterComputeResource'), true, nil)
-          ).merge(
-            generate_host_property(instance_double('VimSdk::Vim::ClusterComputeResource'), true, nil)
-          )
         end
 
         before do
           allow(cluster_config).to receive(:resource_pool).and_return(nil)
         end
 
-        context 'when there are active host mobs' do
-          let(:active_host_1_mob) { instance_double('VimSdk::Vim::ClusterComputeResource') }
-          let(:active_host_2_mob) { instance_double('VimSdk::Vim::ClusterComputeResource') }
-          let(:active_host_mobs) { [active_host_1_mob, active_host_2_mob] }
+        let(:active_host_1_mob) { instance_double('VimSdk::Vim::ClusterComputeResource') }
+        let(:active_host_2_mob) { instance_double('VimSdk::Vim::ClusterComputeResource') }
+        let(:active_host_mobs) { [active_host_1_mob, active_host_2_mob] }
 
-          before do
-            hosts_properties = inactive_host_properties.merge(
-              generate_host_property(active_host_1_mob, false, 100 * 1024 * 1024)
+        let(:active_hosts_properties) do
+          {}.merge(
+            generate_host_property(mob: active_host_1_mob, name: 'mob-1', maintenance_mode: false, memory_size: 100 * 1024 * 1024, power_state: 'poweredOn', connection_state: 'connected')
+          ).merge(
+            generate_host_property(mob: active_host_2_mob, name: 'mob-2', maintenance_mode: false, memory_size: 40 * 1024 * 1024, power_state: 'poweredOn', connection_state: 'connected')
+          )
+        end
+        let(:hosts_properties) { active_hosts_properties }
+
+        before do
+          allow(cloud_searcher).to receive(:get_properties)
+                                     .with(cluster_hosts,
+                                       VimSdk::Vim::HostSystem,
+                                       described_class::HOST_PROPERTIES,
+                                       ensure_all: true)
+                                     .and_return(hosts_properties)
+
+          performance_counters = {
+            active_host_1_mob => {
+              'mem.usage.average' => '2500,2500',
+            },
+            active_host_2_mob => {
+              'mem.usage.average' => '7500,7500',
+            },
+          }
+          allow(client).to receive(:get_perf_counters)
+                             .with(active_host_mobs,
+                               described_class::HOST_COUNTERS,
+                               max_sample: 5)
+                             .and_return(performance_counters)
+        end
+
+        it 'sets resources to values based on the active hosts in the cluster' do
+          expect(cluster.free_memory).to eq(85)
+        end
+
+        context 'when an ESXi host is not powered on' do
+          let(:hosts_properties) do
+            {}.merge(
+              generate_host_property(mob: instance_double('VimSdk::Vim::ClusterComputeResource'), name: 'fake-powered-off', maintenance_mode: false, memory_size: 5 * 1024 * 1024, power_state: 'poweredOff', connection_state: 'connected')
             ).merge(
-              generate_host_property(active_host_2_mob, false, 40 * 1024 * 1024)
+               active_hosts_properties
             )
-
-            allow(cloud_searcher).to receive(:get_properties)
-                                       .with(cluster_hosts,
-                                         VimSdk::Vim::HostSystem,
-                                         described_class::HOST_PROPERTIES,
-                                         ensure_all: true)
-                                       .and_return(hosts_properties)
           end
 
-          before do
-            performance_counters = {
-              active_host_1_mob => {
-                'mem.usage.average' => '2500,2500',
-              },
-              active_host_2_mob => {
-                'mem.usage.average' => '7500,7500',
-              },
-            }
+          it 'includes the free memory of only powered on hosts' do
+            expect(cluster.free_memory).to eq(85)
+          end
+        end
 
-            allow(client).to receive(:get_perf_counters)
-                               .with(active_host_mobs,
-                                 described_class::HOST_COUNTERS,
-                                 max_sample: 5)
-                               .and_return(performance_counters)
-
+        context 'when an ESXi host is disconnected' do
+          let(:hosts_properties) do
+            {}.merge(
+              generate_host_property(mob: instance_double('VimSdk::Vim::ClusterComputeResource'), name: 'fake-host-disc', maintenance_mode: false, memory_size: 5 * 1024 * 1024, power_state: 'poweredOn', connection_state: 'disconnected')
+            ).merge(
+              active_hosts_properties
+            )
           end
 
-          it 'sets resources to values based on the active hosts in the cluster' do
+          it 'includes the free memory of only connected hosts' do
+            expect(cluster.free_memory).to eq(85)
+          end
+        end
+
+        context 'when an ESXi host is in maintenance mode' do
+          let(:hosts_properties) do
+            {}.merge(
+              generate_host_property(mob: instance_double('VimSdk::Vim::ClusterComputeResource'), name: 'fake-host-maint', maintenance_mode: true, memory_size: 5 * 1024 * 1024, power_state: 'poweredOn', connection_state: 'connected')
+            ).merge(
+               active_hosts_properties
+            )
+          end
+
+          it 'includes the free memory of only hosts not in maintenance mode' do
             expect(cluster.free_memory).to eq(85)
           end
         end
 
         context 'when there are no active cluster hosts' do
-          before do
-            allow(cloud_searcher).to receive(:get_properties)
-                                       .with(cluster_hosts,
-                                         VimSdk::Vim::HostSystem,
-                                         described_class::HOST_PROPERTIES,
-                                         ensure_all: true)
-                                       .and_return(inactive_host_properties)
+          let(:hosts_properties) do
+            {}.merge(
+              generate_host_property(mob: instance_double('VimSdk::Vim::ClusterComputeResource'), name: 'fake-host-inactive', maintenance_mode: false, memory_size: 5 * 1024 * 1024, power_state: 'poweredOff', connection_state: 'disconnected')
+            )
           end
 
           it 'defaults free memory to zero' do
             expect(cluster.free_memory).to eq(0)
           end
         end
-      end
-    end
 
-    describe '#datacenter' do
-      it 'returns the injected datacenter' do
-        expect(subject.datacenter).to eq(datacenter)
-      end
-    end
+        context 'when the performance counters for a host are not available' do
+          before do
+            incomplete_perf_counters = {
+              active_host_1_mob => {
+                'mem.usage.average' => '2500,2500',
+              },
+              active_host_2_mob => {},
+            }
+            allow(client).to receive(:get_perf_counters)
+                               .with(active_host_mobs, %w(mem.usage.average), max_sample: 5)
+                               .and_return(incomplete_perf_counters)
+          end
 
-    describe '#persistent' do
-      context 'when a matching datastore is in the persistent datastore pool' do
-        it 'returns that persistent datastore' do
-          expect(cluster.persistent('persistent_1').name).to eq('persistent_1')
-        end
-      end
-
-      context 'when no matching datastore is in the persistent pool' do
-        it 'returns nil' do
-          expect(cluster.persistent('nonexistent-datastore-name')).to be_nil
+          it 'logs a warning and does not include the missing host in the utilization' do
+            expect(logger).to receive(:warn).with(/mob-2.*mem\.usage\.average/)
+            expect(cluster.free_memory).to eq(75)
+          end
         end
       end
     end
@@ -297,24 +290,6 @@ module VSphereCloud::Resources
       end
     end
 
-    describe '#allocate' do
-      let(:fake_runtime_info) do
-        instance_double(
-          'VimSdk::Vim::ResourcePool::RuntimeInfo',
-          overall_status: 'green',
-          memory: instance_double(
-            'VimSdk::Vim::ResourcePool::ResourceUsage',
-            max_usage: 1024 * 1024 * 100,
-            overall_usage: 1024 * 1024 * 75,
-          )
-        )
-      end
-
-      it 'changes the amount of free memory in the cluster' do
-        expect { cluster.allocate(5) }.to change { cluster.free_memory }.from(25).to(20)
-      end
-    end
-
     describe '#mob' do
       it 'returns the cluster mob' do
         expect(cluster.mob).to eq(cluster_mob)
@@ -337,12 +312,6 @@ module VSphereCloud::Resources
     describe '#inspect' do
       it 'returns the printable form' do
         expect(cluster.inspect).to eq("<Cluster: #{cluster_mob} / fake-cluster-name>")
-      end
-    end
-
-    describe '#describe' do
-      it 'returns some debug info' do
-        expect(cluster.describe).to eq("fake-cluster-name has 0mb/39gb/29gb")
       end
     end
 

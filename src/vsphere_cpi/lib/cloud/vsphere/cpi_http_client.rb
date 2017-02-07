@@ -1,22 +1,14 @@
-require 'httpclient'
-
 module VSphereCloud
-  module CpiHttpClient
-    class << self
-      def build
-        client = ::HTTPClient.new
-        client.send_timeout = 14400 # 4 hours, for stemcell uploads
-        client.receive_timeout = 14400
-        client.connect_timeout = 30
+  class CpiHttpClient < BaseHttpClient
 
-        if ENV.has_key?('BOSH_CA_CERT_FILE')
-          client.ssl_config.add_trust_ca(ENV['BOSH_CA_CERT_FILE'])
-        else
-          client.ssl_config.verify_mode = OpenSSL::SSL::VERIFY_NONE
-        end
-
-        client
-      end
+    def initialize(http_log = nil)
+      # skip SSL verification for backwards compatibility
+      super(
+        http_log: http_log,
+        trusted_ca_file: ENV['BOSH_CA_CERT_FILE'],
+        ca_cert_manifest_key: 'vcenter.connection_options.ca_cert',
+        skip_ssl_verify: true,
+      )
     end
   end
 end

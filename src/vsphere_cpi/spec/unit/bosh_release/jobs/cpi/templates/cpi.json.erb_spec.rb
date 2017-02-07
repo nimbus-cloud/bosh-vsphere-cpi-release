@@ -22,6 +22,8 @@ describe 'cpi.json.erb' do
           'address' => 'vcenter-address',
           'user' => 'vcenter-user',
           'password' => 'vcenter-password',
+          'enable_auto_anti_affinity_drs_rules' => true,
+          'http_logging' => true,
           'datacenters' => [
             {
               'name' => 'datacenter-1',
@@ -51,10 +53,9 @@ describe 'cpi.json.erb' do
 
   it 'is able to render the erb given most basic manifest properties' do
     expect(subject).to eq({
-      'cloud'=>{
-        'plugin'=>'vsphere',
+      'cloud' => {
+        'plugin' => 'vsphere',
         'properties' => {
-          'mem_overcommit_ratio' => 0.7,
           'agent' => {
             'blobstore' => {
               'options' => {
@@ -88,12 +89,37 @@ describe 'cpi.json.erb' do
               ],
               'host' => 'vcenter-address',
               'password' => 'vcenter-password',
-              'user' => 'vcenter-user'
+              'user' => 'vcenter-user',
+              'default_disk_type' => 'preallocated',
+              'enable_auto_anti_affinity_drs_rules' => true,
+              'http_logging' => true,
             }
           ],
         }
       }
     })
+  end
+
+  context 'when nsx address is set' do
+    before(:each) {
+      manifest['properties']['vcenter']['nsx'] ={
+        'address' => 'my-nsx-manager',
+        'user' => 'my-nsx-user',
+        'password' => 'fake'
+      }
+    }
+    it 'renders the nsx section properly' do
+      expect(subject['cloud']['properties']['vcenters'].first['nsx']['address']).to eq('my-nsx-manager')
+      expect(subject['cloud']['properties']['vcenters'].first['nsx']['user']).to eq('my-nsx-user')
+      expect(subject['cloud']['properties']['vcenters'].first['nsx']['password']).to eq('fake')
+    end
+  end
+
+  context 'when `default_disk_type` is `thin`' do
+    before(:each) { manifest['properties']['vcenter']['default_disk_type'] = 'thin' }
+    it 'renders the default_disk_type properly' do
+      expect(subject['cloud']['properties']['vcenters'].first['default_disk_type']).to eq('thin')
+    end
   end
 
   context 'when using an s3 blobstore' do
@@ -207,12 +233,48 @@ describe 'cpi.json.erb' do
       end
     end
   end
+
+  context 'when using a local blobstore' do
+    let(:rendered_blobstore) { subject['cloud']['properties']['agent']['blobstore'] }
+
+    context 'when provided a minimal configuration' do
+      before do
+        manifest['properties']['blobstore'].merge!({
+          'provider' => 'local',
+          'path' => '/fake/path',
+        })
+      end
+
+      it 'renders the local provider section with the correct defaults' do
+        expect(rendered_blobstore).to eq(
+          {
+            'provider' => 'local',
+            'options' => {
+              'blobstore_path' => '/fake/path',
+            }
+          }
+        )
+      end
+    end
+    context 'when provided an incomplete configuration' do
+      before do
+        manifest['properties']['blobstore'].merge!({
+          'provider' => 'local',
+        })
+      end
+
+      it 'raises an error' do
+        expect { rendered_blobstore }.to raise_error(/Can't find property 'blobstore.path'/)
+      end
+    end
+  end
 end
 
 class TemplateEvaluationContext
   attr_reader :name, :index
   attr_reader :properties, :raw_properties
   attr_reader :spec
+
   def initialize(spec, manifest)
     @name = spec['job']['name'] if spec['job'].is_a?(Hash)
     @index = spec['index']
@@ -281,7 +343,7 @@ class TemplateEvaluationContext
   def openstruct(object)
     case object
       when Hash
-        mapped = object.inject({}) { |h, (k,v)| h[k] = openstruct(v); h }
+        mapped = object.inject({}) { |h, (k, v)| h[k] = openstruct(v); h }
         OpenStruct.new(mapped)
       when Array
         object.map { |item| openstruct(item) }
@@ -311,16 +373,20 @@ class TemplateEvaluationContext
     def initialize(template)
       @context = template
     end
+
     def else
       yield
     end
+
     def else_if_p(*names, &block)
       @context.if_p(*names, &block)
     end
   end
 
   class InactiveElseBlock
-    def else; end
+    def else;
+    end
+
     def else_if_p(*_)
       InactiveElseBlock.new
     end

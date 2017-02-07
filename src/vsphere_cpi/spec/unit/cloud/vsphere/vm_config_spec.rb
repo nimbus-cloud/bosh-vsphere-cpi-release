@@ -2,16 +2,22 @@ require 'spec_helper'
 
 module VSphereCloud
   describe VmConfig do
+    let(:vm_config) do
+      VmConfig.new(
+        manifest_params: input,
+        cluster_picker: cluster_picker,
+      )
+    end
+    let(:cluster_picker) { ClusterPicker.new(0, 0) }
+
     describe '#name' do
       let(:input) { {} }
       it 'returns a valid VM name' do
-        vm_config = VmConfig.new(manifest_params: input)
         name = vm_config.name
         expect(name).to match /vm-.*/
         expect(name.size).to eq 39
       end
       it 'is idempotent' do
-        vm_config = VmConfig.new(manifest_params: input)
         name = vm_config.name
         expect(name).to match /vm-.*/
         expect(vm_config.name).to eq name
@@ -21,7 +27,6 @@ module VSphereCloud
     describe '#stemcell_cid' do
       let(:input) { { stemcell: { cid: "fake-stemcell" } } }
       it 'returns the provided stemcell_cid' do
-        vm_config = VmConfig.new(manifest_params: input)
         expect(vm_config.stemcell_cid).to eq("fake-stemcell")
       end
     end
@@ -29,7 +34,6 @@ module VSphereCloud
     describe '#agent_id' do
       let(:input) { { agent_id: "fake-agent" } }
       it 'returns the provided agent_id' do
-        vm_config = VmConfig.new(manifest_params: input)
         expect(vm_config.agent_id).to eq("fake-agent")
       end
     end
@@ -37,7 +41,6 @@ module VSphereCloud
     describe '#agent_env' do
       let(:input) { { agent_env: {"fake-key" => "fake-value"} } }
       it 'returns the provided agent_env' do
-        vm_config = VmConfig.new(manifest_params: input)
         expect(vm_config.agent_env).to eq({"fake-key" => "fake-value"})
       end
     end
@@ -70,7 +73,6 @@ module VSphereCloud
         end
 
         it 'returns a list of vSphere networks' do
-          vm_config = VmConfig.new(manifest_params: input)
           expect(vm_config.vsphere_networks).to eq(output)
         end
       end
@@ -101,7 +103,6 @@ module VSphereCloud
         end
 
         it 'returns a list of valid vSphere networks' do
-          vm_config = VmConfig.new(manifest_params: input)
           expect(vm_config.vsphere_networks).to eq(output)
         end
       end
@@ -111,7 +112,6 @@ module VSphereCloud
         let(:output) { {} }
 
         it 'returns an empty hash' do
-          vm_config = VmConfig.new(manifest_params: input)
           expect(vm_config.vsphere_networks).to eq(output)
         end
       end
@@ -120,192 +120,336 @@ module VSphereCloud
     describe '#networks_spec' do
       let(:input) { { networks_spec: {"fake-key" => "fake-value"} } }
       it 'returns the provided networks_spec' do
-        vm_config = VmConfig.new(manifest_params: input)
         expect(vm_config.networks_spec).to eq({"fake-key" => "fake-value"})
       end
     end
 
     describe '#ephemeral_disk_size' do
-      let(:input) { { resource_pool: { "disk" => 1234 } } }
+      let(:input) { { vm_type: { "disk" => 1234 } } }
       it 'returns the provided disk size' do
-        vm_config = VmConfig.new(manifest_params: input)
         expect(vm_config.ephemeral_disk_size).to eq(1234)
       end
     end
 
     describe '#cluster_name' do
-      context 'when datacenters and clusters are specified' do
+      context 'when a cluster is specified within vm_type' do
         let(:input) do
           {
-            resource_pool: {
+            vm_type: {
               "datacenters" => [
                 "clusters" => [
                   { "fake-cluster-name" => {} }
                 ]
-              ]
-            }
+              ],
+              "ram" => 512,
+            },
+            global_clusters: global_clusters,
+          }
+        end
+        let(:global_clusters) do
+          {
+            "fake-cluster-name" => {
+              memory: 2048,
+              datastores: {
+                'small-ds' => {
+                  free_space: 1024,
+                },
+                'large-ds' => {
+                  free_space: 2048,
+                },
+              }
+            },
           }
         end
 
-        it 'returns the provided cluster name' do
-          vm_config = VmConfig.new(manifest_params: input)
+        it 'returns the vm_type cluster name' do
           expect(vm_config.cluster_name).to eq("fake-cluster-name")
         end
 
-        context 'when cluster is specified on the top level' do
+        context 'when a non-existent cluster is specified in vm_type' do
           let(:input) do
           {
-            resource_pool: {
+            vm_type: {
               "datacenters" => [
                 "clusters" => [
                   { "fake-cluster-name" => {} }
                 ]
               ]
             },
-            cluster: "some-alternate-cluster"
+            global_clusters: global_clusters
           }
           end
+          let(:global_clusters) do
+            {
+              "some-cluster" => {},
+              "some-other-cluster" => {},
+            }
+          end
 
-          it 'returns the provided cluster name from resource_pool' do
-            vm_config = VmConfig.new(manifest_params: input)
-            expect(vm_config.cluster_name).to eq("fake-cluster-name")
+          it 'raises an error' do
+            expect {
+              vm_config.cluster_name
+            }.to raise_error Bosh::Clouds::CloudError, "Cluster 'fake-cluster-name' does not match global clusters [some-cluster, some-other-cluster]"
           end
         end
       end
 
-      context 'when datacenters and clusters are not specified' do
+      context 'when datacenters and clusters are not specified in vm_type' do
         let(:input) do
           {
-            resource_pool: {
+            vm_type: {
               "ram" => 1024,
               "disk" => 4096
             },
-            stemcell: {
-              cid: "fake-stemcell-id",
-              size: 2048
+            disk_configurations: disk_configurations,
+            global_clusters: global_clusters,
+          }
+        end
+        let(:global_clusters) do
+          {
+            'cluster-1' => {
+              memory: 1024,
+              datastores: {
+                'smaller-ds' => {
+                  free_space: 512,
+                }
+              }
             },
-            existing_disks: existing_disks,
-            available_clusters: available_clusters
+            'cluster-2' => {
+              memory: 1024,
+              datastores: {
+                'larger-ds' => {
+                  free_space: 2048,
+                }
+              }
+            }
           }
         end
-        let(:available_clusters) do
-          {
-            "fake-cluster" => {}
-          }
-        end
-        let(:existing_disks) do
-          {
-            "persistent-ds-1" => {}
-          }
-        end
-        let (:cluster_picker) { instance_double(ClusterPicker) }
-
-        it 'returns the picked cluster' do
-          expect(cluster_picker).to receive(:update)
-            .with(available_clusters)
-          expect(cluster_picker).to receive(:pick_cluster)
-            .with(1024, 1024 + 4096 + 2048, existing_disks)
-            .and_return("fake-cluster")
-
-          vm_config = VmConfig.new(
-            cluster_picker: cluster_picker,
-            manifest_params: input
-          )
-          expect(vm_config.cluster_name).to eq("fake-cluster")
+        let(:disk_configurations) do
+          [{
+            size: 512,
+            ephemeral: true,
+            target_datastore_pattern: '.*',
+          }]
         end
 
-        it 'is idempotent' do
-          expect(cluster_picker).to receive(:update)
-            .with(available_clusters).once
-          expect(cluster_picker).to receive(:pick_cluster)
-            .once
-            .with(1024, 1024 + 4096 + 2048, existing_disks)
-            .and_return("fake-cluster")
-
-          vm_config = VmConfig.new(
-            cluster_picker: cluster_picker,
-            manifest_params: input
-          )
-          expect(vm_config.cluster_name).to eq("fake-cluster")
-          expect(vm_config.cluster_name).to eq("fake-cluster")
+        it 'returns the picked global cluster' do
+          expect(vm_config.cluster_name).to eq("cluster-2")
         end
 
         context 'when cluster picking information is not provided' do
           let(:input) { {} }
 
-          it 'returns nil' do
-            vm_config = VmConfig.new(manifest_params: input)
-            expect(vm_config.cluster_name).to eq(nil)
+          it 'raises an error' do
+            expect {
+              expect(vm_config.cluster_name)
+            }.to raise_error(Bosh::Clouds::CloudError, "No valid clusters were provided")
           end
         end
 
+        context 'when a disk configuration includes target_datastore_pattern' do
+          let(:input) do
+            {
+              vm_type: {
+                "ram" => 1024,
+                "disk" => 4096
+              },
+              disk_configurations: disk_configurations,
+              global_clusters: global_clusters,
+            }
+          end
+          let(:disk_configurations) do
+            [{
+              cid: 'disk-cid',
+              size: 256,
+              ephemeral: true,
+              target_datastore_pattern: '^(smaller-ds)$',
+            }]
+          end
+
+          it 'uses the pattern specified' do
+            expect(vm_config.cluster_name).to eq('cluster-1')
+          end
+        end
       end
     end
 
-    describe '#datastore_name' do
-      context 'when clusters and datastore are provided' do
+    describe '#ephemeral_datastore_name' do
+      let(:input) do
+        {
+          vm_type: {
+            "ram" => 512,
+          },
+          disk_configurations: disk_configurations,
+          global_clusters: global_clusters,
+        }
+      end
+      let(:global_clusters) do
+        {
+          'cluster-1' => {
+            memory: 2048,
+            datastores: {
+              'target-ds' => {
+                free_space: 512,
+              },
+              'other-ds' => {
+                free_space: 512,
+              }
+            }
+          },
+        }
+      end
+      let(:disk_configurations) do
+        [
+          {
+            size: 512,
+            ephemeral: true,
+            target_datastore_pattern: 'target-ds',
+          },
+          {
+            size: 512,
+            cid: 'disk-1234',
+            existing_datastore_name: 'other-ds',
+            target_datastore_pattern: '.*',
+          },
+        ]
+      end
+
+      it 'returns the datastore where the ephemeral disk was placed' do
+        expect(vm_config.ephemeral_datastore_name).to eq("target-ds")
+      end
+
+      it 'is idempotent' do
+        expect(cluster_picker).to receive(:update)
+          .once.and_call_original
+
+        expect(vm_config.ephemeral_datastore_name).to eq("target-ds")
+        expect(vm_config.ephemeral_datastore_name).to eq("target-ds")
+      end
+    end
+
+    describe '#has_custom_cluster_properties?' do
+      context 'when drs_rules are specified under cluster' do
         let(:input) do
           {
-            resource_pool: {
+            vm_type: {
               "datacenters" => [
                 "clusters" => [
-                  { "fake-cluster" => {} }
+                  {
+                    "fake-cluster-name" => {
+                      "drs_rules" => [
+                        { "name" => "fake-rule", "type" => "fake-type" }
+                      ]
+                    }
+                  }
                 ]
-              ],
-              "disk" => 4096
-            },
-            available_clusters: available_clusters,
-            ephemeral_datastore_pattern: "fake-pattern",
-          }
-        end
-        let(:available_clusters) do
-          {
-            "fake-cluster" => {
-              datastores: "fake-ds"
+              ]
             }
           }
         end
-        let (:datastore_picker) { instance_double(DatastorePicker) }
 
-        it 'returns the picked datastore' do
-          expect(datastore_picker).to receive(:update)
-            .with("fake-ds")
-          expect(datastore_picker).to receive(:pick_datastore)
-            .with(4096, "fake-pattern")
-            .and_return("fake-ds")
+        it 'it returns true' do
+          expect(vm_config.has_custom_cluster_properties?).to be(true)
+        end
+      end
 
-          vm_config = VmConfig.new(
-            datastore_picker: datastore_picker,
-            manifest_params: input
-          )
-          expect(vm_config.datastore_name).to eq("fake-ds")
+      context 'when resource_pool is specified under cluster' do
+        let(:input) do
+          {
+            vm_type: {
+              "datacenters" => [
+                "clusters" => [
+                  {
+                    "fake-cluster-name" => {
+                      "resource_pool" => "fake-resource-pool",
+                    }
+                  }
+                ]
+              ]
+            }
+          }
         end
 
-        it 'is idempotent' do
-          expect(datastore_picker).to receive(:update)
-            .once
-            .with("fake-ds")
-          expect(datastore_picker).to receive(:pick_datastore)
-            .once
-            .with(4096, "fake-pattern")
-            .and_return("fake-ds")
+        it 'it returns true' do
+          expect(vm_config.has_custom_cluster_properties?).to be(true)
+        end
+      end
 
-          vm_config = VmConfig.new(
-            datastore_picker: datastore_picker,
-            manifest_params: input
-          )
-
-          expect(vm_config.datastore_name).to eq("fake-ds")
-          expect(vm_config.datastore_name).to eq("fake-ds")
+      context 'when no clusters are specified in vm_type' do
+        let(:input) do
+          {
+            vm_type: {},
+          }
         end
 
-        context 'when datastore picking information is not provided' do
-          let(:input) { {} }
+        it 'returns false' do
+          expect(vm_config.has_custom_cluster_properties?).to be(false)
+        end
+      end
+    end
 
-          it 'returns nil' do
-            vm_config = VmConfig.new(manifest_params: input)
-            expect(vm_config.datastore_name).to eq(nil)
-          end
+    describe '#cluster_spec' do
+      context 'when drs_rules are specified under cluster' do
+        let(:input) do
+          {
+            vm_type: {
+              "datacenters" => [
+                "clusters" => [
+                  {
+                    "fake-cluster-name" => {
+                      "drs_rules" => [
+                        { "name" => "fake-rule", "type" => "fake-type" }
+                      ]
+                    }
+                  }
+                ]
+              ]
+            }
+          }
+        end
+
+        it 'it returns a hash containing drs_rules' do
+          expect(vm_config.cluster_spec).to eq({
+            "drs_rules" => [
+              { "name" => "fake-rule", "type" => "fake-type" }
+            ]
+          })
+        end
+      end
+
+      context 'when resource_pool is specified under cluster' do
+        let(:input) do
+          {
+            vm_type: {
+              "datacenters" => [
+                "clusters" => [
+                  {
+                    "fake-cluster-name" => {
+                      "resource_pool" => "fake-resource-pool",
+                    }
+                  }
+                ]
+              ]
+            }
+          }
+        end
+
+        it 'it returns a hash containing resource_pool' do
+          expect(vm_config.cluster_spec).to eq({
+            "resource_pool" => "fake-resource-pool",
+          })
+        end
+      end
+
+      context 'when no clusters are specified in vm_type' do
+        let(:input) do
+          {
+            vm_type: {},
+          }
+        end
+
+        it 'returns nil' do
+          expect(vm_config.cluster_spec).to be_nil
         end
       end
     end
@@ -314,7 +458,7 @@ module VSphereCloud
       context 'when drs_rules are specified under cluster' do
         let(:input) do
           {
-            resource_pool: {
+            vm_type: {
               "datacenters" => [
                 "clusters" => [
                   {
@@ -331,7 +475,6 @@ module VSphereCloud
         end
 
         it 'returns the provided drs_rule' do
-          vm_config = VmConfig.new(manifest_params: input)
           expect(vm_config.drs_rule).to eq({ "name" => "fake-rule", "type" => "fake-type" })
         end
       end
@@ -339,7 +482,7 @@ module VSphereCloud
       context 'when drs_rules are not provided' do
         let(:input) do
           {
-            resource_pool: {
+            vm_type: {
               "datacenters" => [
                 "clusters" => [
                   {
@@ -354,7 +497,6 @@ module VSphereCloud
         end
 
         it 'returns nil' do
-          vm_config = VmConfig.new(manifest_params: input)
           expect(vm_config.drs_rule).to be_nil
         end
       end
@@ -362,7 +504,7 @@ module VSphereCloud
       context 'when drs_rules are not provided' do
         let(:input) do
           {
-            resource_pool: {
+            vm_type: {
               "datacenters" => [
                 "clusters" => [
                   {
@@ -375,7 +517,6 @@ module VSphereCloud
         end
 
         it 'returns nil' do
-          vm_config = VmConfig.new(manifest_params: input)
           expect(vm_config.drs_rule).to be_nil
         end
       end
@@ -383,55 +524,55 @@ module VSphereCloud
 
     describe '#config_spec_params' do
       context 'when number of CPUs is provided' do
-        let(:input) { { resource_pool: { "cpu" => 2 } } }
-        let(:output) { { num_cpus: 2} }
+        let(:input) { { vm_type: { "cpu" => 2 } } }
+        let(:output) { { num_cpus: 2 } }
+
         it 'maps to num_cpus' do
-          vm_config = VmConfig.new(manifest_params: input)
           expect(vm_config.config_spec_params).to eq(output)
         end
       end
 
       context 'when memory in MB is provided' do
-        let(:input) { { resource_pool: { "ram" => 4096 } } }
-        let(:output) { { memory_mb: 4096, memory_allocation: anything } }
+        let(:input) { { vm_type: { "ram" => 4096 } } }
+        let(:output) { { memory_mb: 4096 } }
+
         it 'maps to memory_mb' do
-          vm_config = VmConfig.new(manifest_params: input)
           expect(vm_config.config_spec_params).to include(output)
         end
       end
 
       context 'when nested_hardware_virtualization is true' do
-        let(:input) { { resource_pool: { "nested_hardware_virtualization" => true } } }
-        let(:output) { { nested_hv_enabled: true} }
+        let(:input) { { vm_type: { "nested_hardware_virtualization" => true } } }
+        let(:output) { { nested_hv_enabled: true } }
+
         it 'maps to num_cpus' do
-          vm_config = VmConfig.new(manifest_params: input)
           expect(vm_config.config_spec_params).to eq(output)
         end
       end
 
       context 'when nested_hardware_virtualization is false' do
-        let(:input) { { resource_pool: { "nested_hardware_virtualization" => false } } }
+        let(:input) { { vm_type: { "nested_hardware_virtualization" => false } } }
         let(:output) { {} }
+
         it 'does not set any value in the config spec params' do
-          vm_config = VmConfig.new(manifest_params: input)
           expect(vm_config.config_spec_params).to eq(output)
         end
       end
 
       context 'when cpu_hot_add_enabled is true' do
-        let(:input) { { resource_pool: { "cpu_hot_add_enabled" => true } } }
+        let(:input) { { vm_type: { "cpu_hot_add_enabled" => true } } }
         let(:output) { { cpu_hot_add_enabled: true } }
+
         it 'sets it to true' do
-          vm_config = VmConfig.new(manifest_params: input)
           expect(vm_config.config_spec_params).to eq(output)
         end
       end
 
       context 'when memory_hot_add_enabled is true' do
-        let(:input) { { resource_pool: { "memory_hot_add_enabled" => true } } }
+        let(:input) { { vm_type: { "memory_hot_add_enabled" => true } } }
         let(:output) { { memory_hot_add_enabled: true }  }
+
         it 'sets it to true' do
-          vm_config = VmConfig.new(manifest_params: input)
           expect(vm_config.config_spec_params).to eq(output)
         end
       end
@@ -443,7 +584,6 @@ module VSphereCloud
         let(:input) { {} }
 
         it 'validation passes' do
-          vm_config = VmConfig.new(manifest_params: input)
           expect{
             vm_config.validate_drs_rules
           }.to_not raise_error
@@ -453,7 +593,7 @@ module VSphereCloud
       context 'when a cluster is specified but no DRS rules are specified' do
         let(:input) do
           {
-            resource_pool: {
+            vm_type: {
               "datacenters" => [
                 "clusters" => [
                   {
@@ -466,7 +606,6 @@ module VSphereCloud
         end
 
         it 'validation passes' do
-          vm_config = VmConfig.new(manifest_params: input)
           expect{
             vm_config.validate_drs_rules
           }.to_not raise_error
@@ -476,7 +615,7 @@ module VSphereCloud
       context 'when several DRS rules are specified in cloud properties' do
         let(:input) do
           {
-            resource_pool: {
+            vm_type: {
               "datacenters" => [
                 "clusters" => [
                   {
@@ -495,7 +634,6 @@ module VSphereCloud
         let(:drs_rule_type) { 'separate_vms' }
 
         it 'raises an error' do
-          vm_config = VmConfig.new(manifest_params: input)
           expect{
             vm_config.validate_drs_rules
           }.to raise_error /vSphere CPI supports only one DRS rule per resource pool/
@@ -505,7 +643,7 @@ module VSphereCloud
       context 'when one DRS rule is specified' do
         let(:input) do
           {
-            resource_pool: {
+            vm_type: {
               "datacenters" => [
                 "clusters" => [
                   {
@@ -525,7 +663,6 @@ module VSphereCloud
           let(:drs_rule_type) { 'separate_vms' }
 
           it 'validation passes' do
-            vm_config = VmConfig.new(manifest_params: input)
             expect{
               vm_config.validate_drs_rules
             }.to_not raise_error
@@ -544,6 +681,5 @@ module VSphereCloud
         end
       end
     end
-
   end
 end

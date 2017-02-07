@@ -6,13 +6,10 @@ module VSphereCloud
       config
     end
 
+    SUPPORTED_DISK_TYPES = ['thin', 'preallocated']
+
     def initialize(config_hash)
       @config = config_hash
-      @vcenter_host = nil
-      @vcenter_user = nil
-      @vcenter_password = nil
-      @rest_client = nil
-      @default_overcommit_ratio = 1.0
 
       @is_validated = false
     end
@@ -28,45 +25,60 @@ module VSphereCloud
         raise 'vSphere CPI only supports a single datacenter'
       end
 
+      default_disk_type = config['vcenters'].first['default_disk_type']
+
+      if default_disk_type.nil?
+        raise 'Missing required property: vcenters[0].default_disk_type'
+      end
+
+      unless SUPPORTED_DISK_TYPES.include?(default_disk_type)
+        raise "Unsupported default_disk_type '#{default_disk_type}'. vSphere CPI only supports a default_disk_type of 'preallocated' or 'thin'"
+      end
+
       validate_schema
 
       @is_validated = true
+    end
+
+    REQUIRED_NSX_OPTIONS = ['address', 'user', 'password']
+    NSX_MANIFEST_LOCATION = '`jobs.bosh.properties.vcenter.nsx`'
+
+    def nsx_enabled?
+      vcenter['nsx'].nil? == false
+    end
+
+    def validate_nsx_options
+      if vcenter['nsx'].nil?
+        raise "Must specify global NSX config in your director manifest under #{NSX_MANIFEST_LOCATION}"
+      end
+
+      missing_properties = []
+      REQUIRED_NSX_OPTIONS.each do | option |
+        missing_properties << option if vcenter['nsx'][option].nil?
+      end
+
+      unless missing_properties.empty?
+        missing_properties.map! { |p| "'#{p}'"}
+        raise "Must specify the NSX config options #{missing_properties.join(', ')} in your director manifest under #{NSX_MANIFEST_LOCATION}"
+      end
+
+      true
     end
 
     def logger
       @logger ||= Bosh::Clouds::Config.logger
     end
 
-    def client
-      unless @client
-        host = "https://#{vcenter['host']}/sdk/vimService"
-        @client = VCenterClient.new(host, soap_log: soap_log)
-
-        @client.login(vcenter['user'], vcenter['password'], 'en')
-      end
-
-      @client
-    end
-
     def soap_log
-      config['soap_log'] || config['cpi_log']
-    end
-
-    def rest_client
-      unless @rest_client
-        @rest_client = VSphereCloud::CpiHttpClient.build
-
-        # HACK: read the session from the SOAP client so we don't leak sessions
-        # when using the REST client
-        cookie_str = client.soap_stub.cookie
-        @rest_client.cookie_manager.parse(cookie_str, URI.parse("https://#{vcenter_host}"))
+      if vcenter_http_logging
+        config['soap_log'] || config['cpi_log']
+      else
+        nil
       end
-
-      @rest_client
     end
 
-    def mem_overcommit
-      config.fetch('mem_overcommit_ratio', @default_overcommit_ratio)
+    def vcenter_http_logging
+      vcenter['http_logging']
     end
 
     def agent
@@ -77,12 +89,24 @@ module VSphereCloud
       vcenter['host']
     end
 
+    def vcenter_api_uri
+      URI.parse("https://#{vcenter_host}/sdk/vimService")
+    end
+
     def vcenter_user
       vcenter['user']
     end
 
     def vcenter_password
       vcenter['password']
+    end
+
+    def vcenter_default_disk_type
+      vcenter['default_disk_type']
+    end
+
+    def vcenter_enable_auto_anti_affinity_drs_rules
+      vcenter['enable_auto_anti_affinity_drs_rules']
     end
 
     def datacenter_name
@@ -102,11 +126,11 @@ module VSphereCloud
     end
 
     def datacenter_datastore_pattern
-      Regexp.new(vcenter_datacenter['datastore_pattern'])
+      vcenter_datacenter['datastore_pattern']
     end
 
     def datacenter_persistent_datastore_pattern
-      Regexp.new(vcenter_datacenter['persistent_datastore_pattern'])
+      vcenter_datacenter['persistent_datastore_pattern']
     end
 
     def datacenter_clusters
@@ -116,6 +140,18 @@ module VSphereCloud
     def datacenter_use_sub_folder
       datacenter_clusters.any? { |_, cluster| cluster.resource_pool } ||
         !!vcenter_datacenter['use_sub_folder']
+    end
+
+    def nsx_url
+      vcenter['nsx']['address']
+    end
+
+    def nsx_user
+      vcenter['nsx']['user']
+    end
+
+    def nsx_password
+      vcenter['nsx']['password']
     end
 
     private
@@ -141,11 +177,12 @@ module VSphereCloud
           'agent' => dict(String, Object), # passthrough to the agent
           optional('cpi_log') => enum(String, Object),
           optional('soap_log') => enum(String, Object),
-          optional('mem_overcommit_ratio') => Numeric,
           'vcenters' => [{
             'host' => String,
             'user' => String,
             'password' => String,
+            optional('http_logging') => bool,
+            optional('enable_auto_anti_affinity_drs_rules') => bool,
             'datacenters' => [{
               'name' => String,
               'vm_folder' => String,

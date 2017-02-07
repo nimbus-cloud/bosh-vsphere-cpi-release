@@ -1,5 +1,6 @@
 require 'rack'
-require 'thin'
+require 'webrick'
+require 'webrick/https'
 
 module Support
   module StringHelpers
@@ -103,31 +104,65 @@ module Support
     @server.run
   end
 
+  def stop_server
+    @server.shutdown
+  end
+
   module HTTP
     class Server
-      attr_reader :app, :host, :port
+      attr_reader :host, :port
 
       def initialize
-        @app  = Support::HTTP::Application.new('success')
         @host = '127.0.0.1'
         @port = available_port
       end
 
       def run
+        path_to_binary_file = File.join(File.dirname(__FILE__), 'fixtures', 'env.iso')
+
         @thread = Thread.new do
-          Rack::Handler::Thin.run(app, { :Host => host, :Port => port }) do |config|
-            config.ssl = true
-            config.ssl_options = {
-              :private_key_file => private_key.path,
-              :cert_chain_file => cert_chain.path
-            }
-          end
+          server_config = {
+            Host: host,
+            Port: port,
+            Logger: WEBrick::Log.new(File.open(File::NULL, 'w')),
+            AccessLog: [],
+            SSLEnable: true,
+            SSLVerifyClient: OpenSSL::SSL::VERIFY_NONE,
+            SSLPrivateKey: OpenSSL::PKey::RSA.new(File.open(private_key.path).read),
+            SSLCertificate: OpenSSL::X509::Certificate.new(File.open(cert_chain.path).read),
+          }
+
+          Rack::Handler::WEBrick.run(Rack::Builder.new {
+            map '/download' do
+              run lambda { |env|
+                response = Rack::Response.new
+                response.headers.merge!('Content-Type' => 'application/octet-stream')
+                File.open(path_to_binary_file, 'rb') { |file| response.write(file) }
+                response.finish
+              }
+            end
+
+            map '/download-text' do
+              run lambda { |env|
+                response = Rack::Response.new
+                response.headers.merge!('Content-Type' => 'application/octet-stream')
+                response.write('{ "some-key": "some-value" }')
+                response.finish
+              }
+            end
+
+            run lambda { |env| [200, { 'Content-Type' => 'text/plain'}, ['success']] }
+          }, server_config)
         end
 
         Timeout.timeout(5) { @thread.join(0.1) until responsive? }
         self
       rescue Timeout::Error
         raise "Failed to start #{self.class.name} on port: #{port}"
+      end
+
+      def shutdown
+        @thread.exit
       end
 
       private
@@ -194,27 +229,13 @@ module Support
       def responsive?
         return false if @thread && @thread.join(0)
         options = { :use_ssl => true, :verify_mode => OpenSSL::SSL::VERIFY_NONE }
-        response = Net::HTTP.start(host, port, options) { |http| http.get('/__identify__') }
+        response = Net::HTTP.start(host, port, options) { |http| http.get('/') }
 
         if response.is_a?(Net::HTTPSuccess) || response.is_a?(Net::HTTPRedirection)
-          return response.body == app.object_id.to_s
+          return response.code == '200'
         end
       rescue SystemCallError
         return false
-      end
-    end
-
-    class Application
-      def initialize(body = nil)
-        @body = body
-      end
-
-      def call(env)
-        if env['PATH_INFO'] == '/__identify__'
-          [200, {}, self.object_id.to_s]
-        else
-          [200, {}, @body]
-        end
       end
     end
   end

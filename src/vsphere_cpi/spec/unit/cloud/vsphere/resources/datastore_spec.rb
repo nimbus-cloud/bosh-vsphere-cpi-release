@@ -2,7 +2,10 @@ require 'spec_helper'
 
 describe VSphereCloud::Resources::Datastore do
   subject(:datastore) {
-    VSphereCloud::Resources::Datastore.new('foo_lun', datastore_mob, 16 * 1024, 8 * 1024)
+    VSphereCloud::Resources::Datastore.new('foo_lun', datastore_mob,  true, 16 * 1024, 8 * 1024)
+  }
+  subject(:datastore_inaccess) {
+    VSphereCloud::Resources::Datastore.new('foo_lun', datastore_mob,  false, 16 * 1024, 8 * 1024)
   }
 
   let(:datastore_mob) { instance_double('VimSdk::Vim::Datastore', to_s: 'mob_as_string') }
@@ -23,17 +26,8 @@ describe VSphereCloud::Resources::Datastore do
     it 'returns the total space' do
       expect(datastore.total_space).to eq(16384)
     end
-  end
-
-  describe '#synced_free_space' do
-    it 'returns the synced free space' do
-      expect(datastore.synced_free_space).to eq(8192)
-    end
-  end
-
-  describe '#allocated_after_sync' do
-    it 'returns the allocated after sync' do
-      expect(datastore.allocated_after_sync).to eq(0)
+    it 'returns zero total space for inaccessible datastores' do
+      expect(datastore_inaccess.total_space).to eq(0)
     end
   end
 
@@ -41,11 +35,8 @@ describe VSphereCloud::Resources::Datastore do
     it 'returns the free space' do
       expect(datastore.free_space).to eq(8192)
     end
-  end
-
-  describe '#allocate' do
-    it 'should allocate space' do
-      expect { datastore.allocate(1024) }.to change { datastore.free_space }.by(-1024)
+    it 'returns zero free space for inaccessible datastores' do
+      expect(datastore_inaccess.free_space).to eq(0)
     end
   end
 

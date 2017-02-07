@@ -3,7 +3,8 @@ require 'timecop'
 
 describe VSphereCloud::Resources::VM do
   subject(:vm) { described_class.new('vm-cid', vm_mob, client, logger) }
-  let(:vm_mob) { instance_double('VimSdk::Vim::VirtualMachine') }
+  let(:vm_mob) { instance_double('VimSdk::Vim::VirtualMachine', __mo_id__: 'fake-mob-id') }
+  let(:datacenter) { instance_double('VimSdk::Vim::Datacenter')}
   let(:client) { instance_double('VSphereCloud::VCenterClient', cloud_searcher: cloud_searcher) }
   let(:cloud_searcher) { instance_double('VSphereCloud::CloudSearcher') }
   let(:logger) { double(:logger, debug: nil, info: nil) }
@@ -18,14 +19,27 @@ describe VSphereCloud::Resources::VM do
       ['runtime.powerState', 'runtime.question', 'config.hardware.device', 'name', 'runtime', 'resourcePool'],
       ensure: ['config.hardware.device', 'runtime']
     ).and_return(vm_properties)
+
+    allow(client).to receive(:find_parent)
+      .with(vm_mob, VimSdk::Vim::Datacenter)
+      .and_return(datacenter)
   end
 
   let(:vm_properties) { {'runtime' => double(:runtime, host: 'vm-host')} }
 
+  describe '#mob_id' do
+    it 'returns the ID of the underlying mob object' do
+      expect(vm.mob_id).to eq('fake-mob-id')
+    end
+  end
+
   describe '#accessible_datastore_names' do
     it 'returns accessible datastores' do
       datastore_mob = instance_double('VimSdk::Vim::Datastore')
-      host_properties = {'datastore' => [datastore_mob]}
+      inaccessible_datastore_mob = instance_double('VimSdk::Vim::Datastore')
+      host_properties = {
+        'datastore' => [datastore_mob, inaccessible_datastore_mob]
+      }
       allow(cloud_searcher).to receive(:get_properties).with(
         'vm-host',
         VimSdk::Vim::HostSystem,
@@ -35,9 +49,21 @@ describe VSphereCloud::Resources::VM do
       allow(cloud_searcher).to receive(:get_properties).with(
         datastore_mob,
         VimSdk::Vim::Datastore,
-        'name',
+        ['name', 'summary.accessible'],
         ensure_all: true,
-      ).and_return({ 'name' => 'datastore-name' })
+      ).and_return({
+        'name' => 'datastore-name',
+        'summary.accessible' => true,
+      })
+      allow(cloud_searcher).to receive(:get_properties).with(
+        inaccessible_datastore_mob,
+        VimSdk::Vim::Datastore,
+        ['name', 'summary.accessible'],
+        ensure_all: true,
+      ).and_return({
+        'name' => 'inaccessible-datastore-name',
+        'summary.accessible' => false,
+      })
 
       expect(vm.accessible_datastore_names).to eq(['datastore-name'])
     end
@@ -174,12 +200,6 @@ describe VSphereCloud::Resources::VM do
     let(:vm_devices) { [] }
 
     before do
-      allow(cloud_searcher).to receive(:get_property).with(
-        vm_mob,
-        VimSdk::Vim::VirtualMachine,
-        ['runtime.powerState', 'runtime.question', 'config.hardware.device', 'name', 'runtime', 'resourcePool'],
-        ensure: ['config.hardware.device', 'runtime']
-      ).and_return({'runtime.question' => nil})
       allow(vm).to receive(:persistent_disk_device_keys_from_vapp_config).and_return([])
     end
 
@@ -208,6 +228,14 @@ describe VSphereCloud::Resources::VM do
     end
 
     context 'when current state is not powered off' do
+      before do
+        allow(cloud_searcher).to receive(:get_property).with(
+          vm_mob,
+          VimSdk::Vim::VirtualMachine,
+          'runtime.powerState',
+        ).and_return(powered_on_state)
+      end
+
       it 'sends power off' do
         expect(client).to receive(:power_off_vm).with(vm_mob)
         vm.power_off
@@ -216,12 +244,11 @@ describe VSphereCloud::Resources::VM do
 
     context 'when current state is powered off' do
       before do
-        allow(cloud_searcher).to receive(:get_properties).with(
+        allow(cloud_searcher).to receive(:get_property).with(
           vm_mob,
           VimSdk::Vim::VirtualMachine,
-          ['runtime.powerState', 'runtime.question', 'config.hardware.device', 'name', 'runtime', 'resourcePool'],
-          ensure: ['config.hardware.device', 'runtime']
-        ).and_return({'runtime.powerState' => powered_off_state, 'config.hardware.device' => vm_devices})
+          'runtime.powerState',
+        ).and_return(powered_off_state)
       end
 
       it 'does not send power off' do
@@ -256,8 +283,42 @@ describe VSphereCloud::Resources::VM do
     end
   end
 
+  describe '#get_vapp_property_by_key' do
+    let(:v_app_properties) do
+      [
+        double('property', category: 'Fake vSphere Field', key: 'fake-key-1'),
+        double('property', category: 'BOSH Persistent Disks', key: 'fake-key-2'),
+        double('property', category: 'BOSH Persistent Disks', key: 'fake-key-3')
+      ]
+    end
+
+    before do
+      allow(vm_mob).to receive_message_chain('config.v_app_config.property').and_return(v_app_properties)
+    end
+
+    it 'returns the property keys' do
+      expect(vm.get_vapp_property_by_key('fake-key-1')).to eq(v_app_properties[0])
+    end
+
+    context 'when given a missing key' do
+      it 'returns nil' do
+        expect(vm.get_vapp_property_by_key('missing-key')).to be_nil
+      end
+    end
+
+    context 'when v_app_config is nil' do
+      before do
+        allow(vm_mob).to receive_message_chain('config.v_app_config').and_return(nil)
+      end
+
+      it 'returns nil' do
+        expect(vm.get_vapp_property_by_key('fake-key-1')).to be_nil
+      end
+    end
+  end
+
   describe '#attach_disk' do
-    let(:disk) { VSphereCloud::Resources::PersistentDisk.new('fake-disk-cid', 1024, datastore, 'fake-folder') }
+    let(:disk) { VSphereCloud::Resources::PersistentDisk.new(cid: 'fake-disk-cid', size_in_mb: 1024, datastore: datastore, folder: 'fake-folder') }
     let(:datastore) { instance_double('VSphereCloud::Resources::Datastore', name: 'fake-datastore')}
     let(:devices) { [disk] }
 
@@ -316,11 +377,8 @@ describe VSphereCloud::Resources::VM do
       )
     end
 
-    let(:datacenter) { instance_double('VimSdk::Vim::Datacenter')}
-
     before {
       allow(vm).to receive(:has_persistent_disk_property_mismatch?).and_return(false)
-      allow(vm).to receive(:datacenter).and_return(datacenter)
       allow(vm_mob).to receive_message_chain('config.v_app_config.property').and_return([
         disk0_property,
         disk1_property
@@ -460,10 +518,12 @@ describe VSphereCloud::Resources::VM do
     let(:vm_properties) { { 'config.hardware.device' => vm_devices } }
 
     before do
-      allow(vm).to receive(:persistent_disk_device_keys_from_vapp_config).and_return([
-        persistent_disk_with_non_persistent_mode.key,
-        persistent_disk_with_non_independent_mode.key
-      ])
+      v_app_properties = [
+        double('property', category: 'Fake vSphere Field', key: 'foo'),
+        double('property', category: 'BOSH Persistent Disks', key: persistent_disk_with_non_persistent_mode.key),
+        double('property', category: 'BOSH Persistent Disks', key: persistent_disk_with_non_independent_mode.key)
+      ]
+      allow(vm_mob).to receive_message_chain('config.v_app_config.property').and_return(v_app_properties)
     end
 
     it 'returns all persistent disks' do
@@ -479,6 +539,15 @@ describe VSphereCloud::Resources::VM do
 
     it 'returns the ephemeral disk' do
       expect(vm.ephemeral_disk).to eq(ephemeral_disk)
+    end
+
+    context 'when v_app_config is missing' do
+      before do
+        allow(vm_mob).to receive_message_chain('config.v_app_config').and_return(nil)
+      end
+      it 'returns the INDEPENDENT_PERSISTENT disks' do
+        expect(vm.persistent_disks).to eq([persistent_disk])
+      end
     end
   end
 

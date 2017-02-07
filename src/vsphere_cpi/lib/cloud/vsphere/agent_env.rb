@@ -1,15 +1,16 @@
 module VSphereCloud
   class AgentEnv
     include VimSdk
-    include RetryBlock
 
-    def initialize(client, file_provider, cloud_searcher)
+    def initialize(client:, file_provider:, cloud_searcher:, logger:)
       @client = client
       @file_provider = file_provider
       @cloud_searcher = cloud_searcher
+      @logger = logger
     end
 
     def get_current_env(vm, datacenter_name)
+      @logger.info("Getting current agent env from vm '#{vm.name}' in datacenter '#{datacenter_name}'")
       cdrom = @client.get_cdrom_device(vm)
       env_iso_folder = env_iso_folder(cdrom)
       return unless env_iso_folder
@@ -20,19 +21,20 @@ module VSphereCloud
       raise Bosh::Clouds::CloudError.new("Could not find matching datastore name '#{datastore_name}'") unless result
       env_path = result[1]
 
-      contents = @file_provider.fetch_file(datacenter_name, datastore_name, "#{env_path}/env.json")
+      contents = @file_provider.fetch_file_from_datastore(datacenter_name, datastore_name, "#{env_path}/env.json")
       raise Bosh::Clouds::CloudError.new("Unable to load env.json from '#{env_path}/env.json'") unless contents
 
       JSON.load(contents)
     end
 
     def set_env(vm, location, env)
+      @logger.info("Updating current agent env from vm '#{vm.name}' in datacenter '#{location[:datacenter]}'")
       env_json = JSON.dump(env)
 
       disconnect_cdrom(vm)
       clean_env(vm)
-      @file_provider.upload_file(location[:datacenter], location[:datastore], "#{location[:vm]}/env.json", env_json)
-      @file_provider.upload_file(location[:datacenter], location[:datastore], "#{location[:vm]}/env.iso", generate_env_iso(env_json))
+      @file_provider.upload_file_to_datastore(location[:datacenter], location[:datastore], "#{location[:vm]}/env.json", env_json)
+      @file_provider.upload_file_to_datastore(location[:datacenter], location[:datastore], "#{location[:vm]}/env.iso", generate_env_iso(env_json))
 
       datastore = @cloud_searcher.get_managed_object(Vim::Datastore, name: location[:datastore])
       file_name = "[#{location[:datastore]}] #{location[:vm]}/env.iso"
@@ -46,6 +48,7 @@ module VSphereCloud
     end
 
     def clean_env(vm)
+      @logger.info("Cleaning current agent env from vm '#{vm.name}'")
       cdrom = @client.get_cdrom_device(vm)
       env_iso_folder = env_iso_folder(cdrom)
       return unless env_iso_folder

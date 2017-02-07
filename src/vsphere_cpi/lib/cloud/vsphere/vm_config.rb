@@ -1,10 +1,9 @@
 module VSphereCloud
   class VmConfig
 
-    def initialize(manifest_params:, cluster_picker: cluster_picker, datastore_picker: datastore_picker)
+    def initialize(manifest_params:, cluster_picker: nil)
       @manifest_params = manifest_params
       @cluster_picker = cluster_picker
-      @datastore_picker = datastore_picker
     end
 
     def name
@@ -12,46 +11,39 @@ module VSphereCloud
     end
 
     def cluster_name
-      return clusters_spec.keys.first if clusters_spec.keys.first
-      return nil if @cluster_picker.nil?
       return @cluster_name if @cluster_name
 
-      @cluster_picker.update(available_clusters)
+      return nil if @cluster_picker.nil?
 
-      total_eph_disk_size = ephemeral_disk_size + config_spec_params[:memory_mb] + stemcell_size
-      @cluster_name = @cluster_picker.pick_cluster(config_spec_params[:memory_mb], total_eph_disk_size, existing_disks)
+      @cluster_name = cluster_placement.keys.first
     end
 
-    # TODO: Remove this once we handle placement resources better
-    def is_top_level_cluster
-      return true if clusters_spec.keys.first
+    def has_custom_cluster_properties?
+      # custom properties include drs_rules and vcenter resource_pools
+      !!resource_pool_clusters_spec.keys.first
     end
 
-    # TODO: Remove this once we handle placement resources better
     def cluster_spec
-        return clusters_spec.values.first
+      return resource_pool_clusters_spec.values.first
     end
 
     def drs_rule
-      cluster_config = clusters_spec.values.first
+      cluster_config = resource_pool_clusters_spec.values.first
       return nil if cluster_config.nil?
 
       (cluster_config["drs_rules"] || []).first
     end
 
-    def datastore_name
-      return nil if @datastore_picker.nil?
+    def ephemeral_datastore_name
+      return nil if cluster_name.nil?
       return @datastore_name if @datastore_name
 
-      cluster_properties = available_clusters[cluster_name]
-      return nil if cluster_properties.nil?
-
-      @datastore_picker.update(cluster_properties[:datastores])
-      @datastore_name = @datastore_picker.pick_datastore(ephemeral_disk_size, @manifest_params[:ephemeral_datastore_pattern])
+      ephemeral_disk = disk_configurations.find { |disk| disk[:ephemeral] }
+      cluster_placement[cluster_name][ephemeral_disk]
     end
 
     def ephemeral_disk_size
-      resource_pool["disk"]
+      vm_type["disk"]
     end
 
     def stemcell_cid
@@ -89,14 +81,14 @@ module VSphereCloud
 
     def config_spec_params
       params = {}
-      params[:num_cpus] = resource_pool['cpu']
-      params[:memory_mb] = resource_pool['ram']
       # nimbus2 stuff - force memory allocation - start
-      params[:memory_allocation] = VimSdk::Vim::ResourceAllocationInfo.new(reservation: resource_pool['ram']) if resource_pool['ram']
+      params[:memory_allocation] = VimSdk::Vim::ResourceAllocationInfo.new(reservation: vm_type['ram']) if vm_type['ram']
       # nimbus2 stuff - force memory allocation - end
-      params[:nested_hv_enabled] = true if resource_pool['nested_hardware_virtualization']
-      params[:cpu_hot_add_enabled] = true if resource_pool['cpu_hot_add_enabled']
-      params[:memory_hot_add_enabled] = true if resource_pool['memory_hot_add_enabled']
+      params[:num_cpus] = vm_type['cpu']
+      params[:memory_mb] = vm_type['ram']
+      params[:nested_hv_enabled] = true if vm_type['nested_hardware_virtualization']
+      params[:cpu_hot_add_enabled] = true if vm_type['cpu_hot_add_enabled']
+      params[:memory_hot_add_enabled] = true if vm_type['memory_hot_add_enabled']
       params.delete_if { |k, v| v.nil? }
     end
 
@@ -105,7 +97,7 @@ module VSphereCloud
     end
 
     def validate_drs_rules
-      cluster_config = clusters_spec.values.first
+      cluster_config = resource_pool_clusters_spec.values.first
       return if cluster_config.nil?
 
       drs_rules = cluster_config["drs_rules"]
@@ -122,31 +114,70 @@ module VSphereCloud
       end
     end
 
+    def bosh_group
+      if !agent_env['bosh'].nil? then
+        return agent_env['bosh']['group']
+      else
+        return nil
+      end
+    end
+
     private
 
-    def resource_pool
-      @manifest_params[:resource_pool] || {}
+    def vm_type
+      @manifest_params[:vm_type] || {}
     end
 
     def available_clusters
-      @manifest_params[:available_clusters] || {}
+      if resource_pool_cluster_name
+        if global_clusters[resource_pool_cluster_name].nil?
+          raise Bosh::Clouds::CloudError, "Cluster '#{resource_pool_cluster_name}' does not match global clusters [#{global_clusters.keys.join(', ')}]"
+        end
+        return global_clusters.select { |k,_| k == resource_pool_cluster_name }
+      end
+      global_clusters
+    end
+
+    def resource_pool_cluster_name
+      resource_pool_clusters_spec.keys.first || nil
+    end
+
+    def global_clusters
+      @manifest_params[:global_clusters] || {}
     end
 
     def stemcell
       @manifest_params[:stemcell] || {}
     end
 
-    def existing_disks
-      @manifest_params[:existing_disks] || {}
+    def disk_configurations
+      @manifest_params[:disk_configurations] || {}
     end
 
     def datacenters_spec
-      resource_pool['datacenters'] || []
+      vm_type['datacenters'] || []
     end
 
-    def clusters_spec
+    def resource_pool_clusters_spec
       datacenter_spec = datacenters_spec.first || {}
       datacenter_spec.fetch('clusters', []).first || {}
+    end
+
+    def cluster_placement
+      return @cluster_placement if @cluster_placement
+
+      if available_clusters.empty?
+        raise Bosh::Clouds::CloudError, "No valid clusters were provided"
+      end
+      if vm_type['ram'].nil?
+        raise Bosh::Clouds::CloudError, "Must specify vm_types.cloud_properties.ram"
+      end
+
+      @cluster_picker.update(available_clusters)
+      @cluster_placement = @cluster_picker.best_cluster_placement(
+        req_memory: vm_type['ram'],
+        disk_configurations: disk_configurations,
+      )
     end
   end
 end

@@ -1,10 +1,10 @@
 module VSphereCloud
   module Resources
     class ClusterProvider
-      def initialize(datacenter, client, logger)
-        @datacenter = datacenter
-        @client = client
-        @logger = logger
+      def initialize(options)
+        @datacenter_name = options.fetch(:datacenter_name)
+        @client = options.fetch(:client)
+        @logger = options.fetch(:logger)
       end
 
       def find(name, config)
@@ -18,10 +18,6 @@ module VSphereCloud
         raise "Can't find properties for cluster '#{name}'" if cluster_properties.nil?
 
         Cluster.new(
-          @datacenter,
-          @datacenter.ephemeral_pattern,
-          @datacenter.persistent_pattern,
-          @datacenter.mem_overcommit,
           config,
           cluster_properties,
           @logger,
@@ -31,11 +27,17 @@ module VSphereCloud
 
       private
 
+      def datacenter_mob
+        mob = @client.find_by_inventory_path(@datacenter_name)
+        raise "Datacenter '#{@datacenter_name}' not found" if mob.nil?
+        mob
+      end
+
       def cluster_mobs
         @cluster_mobs ||= begin
           cluster_tuples = @client.cloud_searcher.get_managed_objects(
             VimSdk::Vim::ClusterComputeResource,
-            root: @datacenter.mob,
+            root: datacenter_mob,
             include_name: true
           )
           Hash[*(cluster_tuples.flatten)]

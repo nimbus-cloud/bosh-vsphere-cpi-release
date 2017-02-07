@@ -8,7 +8,7 @@ module VSphereCloud
       stringify_with :name
 
       PROPERTIES = %w(name datastore resourcePool host)
-      HOST_PROPERTIES = %w(hardware.memorySize runtime.inMaintenanceMode)
+      HOST_PROPERTIES = %w(name hardware.memorySize runtime.connectionState runtime.inMaintenanceMode runtime.powerState)
       HOST_COUNTERS = %w(mem.usage.average)
 
       MEMORY_HEADROOM = 128
@@ -17,17 +17,9 @@ module VSphereCloud
       #   @return [Vim::ClusterComputeResource] cluster vSphere MOB.
       attr_reader :mob
 
-      # @!attribute datacenter
-      #   @return [Datacenter] parent datacenter.
-      attr_reader :datacenter
-
       # @!attribute resource_pool
       #   @return [ResourcePool] resource pool.
       attr_reader :resource_pool
-
-      # @!attribute allocated_after_sync
-      #   @return [Integer] memory allocated since utilization sync in MB.
-      attr_accessor :allocated_after_sync
 
       # Creates a new Cluster resource from the specified datacenter, cluster
       # configuration, and prefetched properties.
@@ -36,50 +28,26 @@ module VSphereCloud
       # @param [ClusterConfig] config cluster configuration as specified by the
       #   operator.
       # @param [Hash] properties prefetched vSphere properties for the cluster.
-      def initialize(datacenter, datacenter_datastore_pattern, datacenter_persistent_datastore_pattern, mem_overcommit, cluster_config, properties, logger, client)
-        @datacenter = datacenter
+      def initialize(cluster_config, properties, logger, client)
         @logger = logger
         @client = client
         @properties = properties
 
         @config = cluster_config
         @mob = properties[:obj]
-        @resource_pool = ResourcePool.new(@client, @logger, cluster_config, properties["resourcePool"])
-        @datacenter_datastore_pattern = datacenter_datastore_pattern
-        @datacenter_persistent_datastore_pattern = datacenter_persistent_datastore_pattern
-        @mem_overcommit = mem_overcommit
-        @allocated_after_sync = 0
-      end
-
-      # Returns the persistent datastore by name. This could be either from the
-      # exclusive or shared datastore pools.
-      #
-      # @param [String] datastore_name name of the datastore.
-      # @return [Datastore, nil] the requested persistent datastore.
-      def persistent(datastore_name)
-        persistent_datastores[datastore_name]
+        @resource_pool = ResourcePool.new(@client, @logger, cluster_config, properties['resourcePool'])
       end
 
       # @return [Integer] amount of free memory in the cluster
       def free_memory
-        synced_free_memory -
-          (@allocated_after_sync * @mem_overcommit).to_i
-      end
-
-      def total_free_ephemeral_disk_in_mb
-        ephemeral_datastores.values.map(&:free_space).inject(0, :+)
-      end
-
-      def total_free_persistent_disk_in_mb
-        persistent_datastores.values.map(&:free_space).inject(0, :+)
-      end
-
-      # Marks the memory reservation against the cached utilization data.
-      #
-      # @param [Integer] memory size of memory reservation.
-      # @return [void]
-      def allocate(memory)
-        @allocated_after_sync += memory
+        return @synced_free_memory if @synced_free_memory
+        # Have to use separate mechanisms for fetching utilization depending on
+        # whether we're using resource pools or raw clusters.
+        if @config.resource_pool.nil?
+          @synced_free_memory = fetch_cluster_utilization(properties['host'])
+        else
+          @synced_free_memory = fetch_resource_pool_utilization
+        end
       end
 
       # @return [String] cluster name.
@@ -92,26 +60,12 @@ module VSphereCloud
         "<Cluster: #{mob} / #{config.name}>"
       end
 
-      # @return [String] more descriptive debug cluster information.
-      def describe
-        "#{name} has #{free_memory}mb/" +
-          "#{total_free_ephemeral_disk_in_mb / 1024}gb/" +
-          "#{total_free_persistent_disk_in_mb / 1024}gb"
-      end
-
-      def ephemeral_datastores
-        @ephemeral_datastores ||= select_datastores(@datacenter_datastore_pattern)
-      end
-
-      def persistent_datastores
-        @persistent_datastores ||= select_datastores(@datacenter_persistent_datastore_pattern)
-      end
-
-      def all_datastores
-        @all_datastores ||= Datastore.build_from_client(
+      def accessible_datastores
+        @accessible_datastores ||= Datastore.build_from_client(
           @client,
           properties['datastore']
-        ).inject({}) do |acc, datastore|
+        ).select { |datastore| datastore.accessible }
+        .inject({}) do |acc, datastore|
           acc[datastore.name] = datastore
           acc
         end
@@ -122,18 +76,7 @@ module VSphereCloud
       attr_reader :config, :client, :properties, :logger
 
       def select_datastores(pattern)
-        all_datastores.select { |name, datastore| name =~ pattern }
-      end
-
-      def synced_free_memory
-        return @synced_free_memory if @synced_free_memory
-        # Have to use separate mechanisms for fetching utilization depending on
-        # whether we're using resource pools or raw clusters.
-        if @config.resource_pool.nil?
-          @synced_free_memory = fetch_cluster_utilization(properties['host'])
-        else
-          @synced_free_memory = fetch_resource_pool_utilization
-        end
+        accessible_datastores.select { |name, datastore| name =~ pattern }
       end
 
       # Fetches the raw cluster utilization from vSphere.
@@ -157,9 +100,14 @@ module VSphereCloud
         counters = @client.get_perf_counters(active_host_mobs, HOST_COUNTERS, max_sample: 5)
         counters.each do |host_mob, counter|
           host_properties = hosts_properties[host_mob]
-          total_memory = host_properties["hardware.memorySize"].to_i
-          percent_used = Util.average_csv(counter["mem.usage.average"]) / 10000
-          free_memory = ((1.0 - percent_used) * total_memory).to_i
+          total_memory = host_properties['hardware.memorySize'].to_i
+          free_memory = 0
+          if !counter['mem.usage.average'].nil?
+            percent_used = Util.average_csv(counter['mem.usage.average']) / 10000
+            free_memory = ((1.0 - percent_used) * total_memory).to_i
+          else
+            logger.warn("host '#{host_properties['name']}' is missing 'mem.usage.average' (possibly recently booted), ignoring")
+          end
 
           cluster_free_memory += free_memory
         end
@@ -174,7 +122,11 @@ module VSphereCloud
       # @return [Array<Vim::HostSystem>] list of hosts that are active
       def select_active_host_mobs(host_properties)
         host_properties.values.
-          select { |p| p['runtime.inMaintenanceMode'] != 'true' }.
+          select { |p|
+            p['runtime.inMaintenanceMode'] != 'true' &&
+              p['runtime.connectionState'] == 'connected' &&
+              p['runtime.powerState'] == 'poweredOn'
+          }.
           collect { |p| p[:obj] }
       end
 

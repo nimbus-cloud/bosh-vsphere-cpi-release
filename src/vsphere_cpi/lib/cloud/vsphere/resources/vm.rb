@@ -2,7 +2,6 @@ module VSphereCloud
   module Resources
     class VM
       include VimSdk
-      include RetryBlock
       include ObjectStringifier
       stringify_with :cid
 
@@ -30,12 +29,25 @@ module VSphereCloud
 
       def accessible_datastore_names
         host_properties['datastore'].map do |store|
-          ds = cloud_searcher.get_properties(store, Vim::Datastore, 'name', ensure_all: true)
-          ds['name']
-        end
+          ds = cloud_searcher.get_properties(
+            store,
+            Vim::Datastore,
+            ['name', 'summary.accessible'],
+            ensure_all: true
+          )
+          if ds['summary.accessible']
+            ds['name']
+          else
+            nil
+          end
+        end.compact
       end
 
-      def datacenter
+      def mob_id
+        @mob.__mo_id__
+      end
+
+      def datacenter_mob
         @client.find_parent(@mob, Vim::Datacenter)
       end
 
@@ -124,22 +136,21 @@ module VSphereCloud
       def power_off
         check_for_nonpersistent_disk_modes
 
-        retry_block do
-          question = properties['runtime.question']
-          if question
-            choices = question.choice
-            @logger.info("VM is blocked on a question: #{question.text}, " +
-                "providing default answer: #{choices.choice_info[choices.default_index].label}")
-            @client.answer_vm(@mob, question.id, choices.choice_info[choices.default_index].key)
-            power_state = cloud_searcher.get_property(@mob, Vim::VirtualMachine, 'runtime.powerState')
-          else
-            power_state = properties['runtime.powerState']
-          end
+        question = properties['runtime.question']
+        if question
+          choices = question.choice
+          @logger.info("VM is blocked on a question: #{question.text}, " +
+              "providing default answer: #{choices.choice_info[choices.default_index].label}")
+          @client.answer_vm(@mob, question.id, choices.choice_info[choices.default_index].key)
+        end
 
-          if power_state != Vim::VirtualMachine::PowerState::POWERED_OFF
-            @logger.info("Powering off vm: #{@cid}")
-            @client.power_off_vm(@mob)
-          end
+        # get current power state from the server
+        power_state = cloud_searcher.get_property(@mob, Vim::VirtualMachine, 'runtime.powerState')
+
+        if power_state != Vim::VirtualMachine::PowerState::POWERED_OFF
+          @client.power_off_vm(@mob)
+        else
+          @logger.info("VM '#{@cid}' is already powered off, skipping power off task.")
         end
       end
 
@@ -166,11 +177,11 @@ module VSphereCloud
       end
 
       def power_on
-        @client.power_on_vm(datacenter, @mob)
+        @client.power_on_vm(datacenter_mob, @mob)
       end
 
       def delete
-        retry_block { @client.delete_vm(@mob) }
+        @client.delete_vm(@mob)
       end
 
       def reload
@@ -216,12 +227,14 @@ module VSphereCloud
       end
 
       def get_vapp_property_by_key(key)
-        @mob.config.v_app_config.property.find { |property| property.key == key }
+        v_app_config = @mob.config.v_app_config
+        return nil if v_app_config.nil?
+        v_app_config.property.find { |property| property.key == key }
       end
 
       def attach_disk(disk_resource_object)
         disk = disk_resource_object
-        disk_config_spec = disk.create_disk_attachment_spec(system_disk.controller_key)
+        disk_config_spec = disk.create_disk_attachment_spec(disk_controller_id: system_disk.controller_key)
 
         vm_config = Vim::Vm::ConfigSpec.new
         vm_config.device_change = []
@@ -260,7 +273,8 @@ module VSphereCloud
             end
           end
         end
-        retry_block { @client.reconfig_vm(@mob, config) }
+
+        @client.reconfig_vm(@mob, config)
         @logger.info("Detached #{virtual_disks.size} persistent disk(s)")
 
         move_disks_to_old_path(disks_to_move)
@@ -284,7 +298,7 @@ module VSphereCloud
           dest_filename = original_disk_path.split(" ").last
           dest_path = "#{current_datastore} #{dest_filename}"
 
-          @client.move_disk(datacenter, current_path, datacenter, dest_path)
+          @client.move_disk(datacenter_mob, current_path, datacenter_mob, dest_path)
         end
       end
 
@@ -340,7 +354,10 @@ module VSphereCloud
       end
 
       def persistent_disk_device_keys_from_vapp_config
-        disk_properties = @mob.config.v_app_config.property.select do |property|
+        v_app_config = @mob.config.v_app_config
+        return [] if v_app_config.nil?
+
+        disk_properties = v_app_config.property.select do |property|
           property.category == 'BOSH Persistent Disks'
         end
         disk_properties.map { |property| property.key }
