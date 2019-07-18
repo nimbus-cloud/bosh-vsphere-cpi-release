@@ -15,7 +15,7 @@ module VSphereCloud
         else
           common_rules.merge!({'username' => String,
                                'password' => String,
-                               optional('remote_auth') => b
+                               optional('remote_auth') => bool
                              })
         end
         common_rules
