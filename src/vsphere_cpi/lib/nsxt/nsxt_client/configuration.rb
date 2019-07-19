@@ -49,15 +49,13 @@ module NSXT
     # @return [String]
     attr_accessor :password
 
-    # Defines the password used with HTTP basic authentication.
-    #
-    # @return [String]
-    attr_accessor :password
-
     # Set this to false if NSX-T is using VMware Identity Manager
     #
     # @return [true, false]
     attr_accessor :remote_auth
+
+    # Defines the access token (Bearer) used with OAuth2.
+    attr_accessor :access_token
 
     # Set this to enable/disable debugging. When enabled (set to true), HTTP request/response
     # details will be logged with `logger.debug` (see the `logger` attribute).

@@ -5,7 +5,9 @@ module VSphereCloud
       configuration.host = config.host
       configuration.username = config.username
       configuration.password = config.password
-      configuration.remote_auth = config.remote_auth
+      if config.remote_auth != nil
+        configuration.remote_auth = config.remote_auth
+      end
       configuration.logger = logger
       configuration.client_side_validation = false
       if ENV['BOSH_NSXT_CA_CERT_FILE']
@@ -15,8 +17,6 @@ module VSphereCloud
         configuration.verify_ssl = false
         configuration.verify_ssl_host = false
       end
-      configuration.verify_ssl = false
-      configuration.verify_ssl_host = false
       NSXT::ApiClient.new(configuration)
     end
   end
