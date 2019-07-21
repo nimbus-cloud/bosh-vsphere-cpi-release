@@ -17,6 +17,9 @@ module VSphereCloud
         configuration.verify_ssl = false
         configuration.verify_ssl_host = false
       end
+      #TODO: expose verify_ssl options via job spec
+      configuration.verify_ssl = false
+      configuration.verify_ssl_host = false
       NSXT::ApiClient.new(configuration)
     end
   end
